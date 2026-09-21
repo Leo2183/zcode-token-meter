@@ -45,6 +45,11 @@
   .dot.completed { background: var(--accent); }
   .dot.error { background: var(--red); }
   .dot.cancelled { background: var(--amber); }
+  .other-dot {
+    display: none; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--amber); cursor: help; animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
   .btn {
     -webkit-app-region: no-drag; border: none; background: transparent;
     color: var(--dim); font-size: 11px; line-height: 1; cursor: pointer; padding: 1px 3px;
@@ -103,6 +108,7 @@
   <div class="hdr">
     <span class="logo">⚡ token-meter</span>
     <span class="model" id="model">…</span>
+    <span class="other-dot" id="otherDot" title=""></span>
     <span class="dot" id="dot"></span>
     <button class="btn" id="fontBtn" title="字号(或 Ctrl+滚轮 / 右键菜单)">Aa</button>
     <button class="btn" id="shrinkBtn" title="缩小为胶囊">—</button>
@@ -240,6 +246,16 @@
     lastTs = s.ts;
     $('model').textContent = s.session.model || '–';
     $('dot').className = 'dot ' + (s.turn.lastStatus || '');
+    // 双重检测提示:另有会话(如定时任务)在活动时亮黄点,悬停看标题
+    const od = $('otherDot');
+    if (s.otherActive) {
+      od.style.display = 'inline-block';
+      od.title = '另有会话在活动:' + s.otherActive.title
+        + '(' + Math.max(1, Math.round(s.otherActive.agoMs / 60000)) + ' 分钟前)';
+    } else {
+      od.style.display = 'none';
+      od.title = '';
+    }
 
     const tps = s.turn.tps;
     const tpsEl = $('tps');

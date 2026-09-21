@@ -29,15 +29,29 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
     // 会话跟随:取 time_updated 最新的顶层(非子代理、未归档)会话。
     // session.time_updated 在消息/工具等事件落库时就会刷新,不必等模型请求完成——
     // 切换对话后一旦有输入即跟随;找不到时退回旧行为(最新 main_turn 所在会话)。
+    // 双重检测:
+    //   当前对话 = 最近一次"用户亲手输入"(input_history)所在的顶层会话——
+    //              定时/后台会话的周期触发不写 input_history,抢不走显示;
+    //   活跃对话 = time_updated 最新的顶层会话(含定时任务),与当前对话不同时作为 otherActive 提示。
+    const curInput = db.prepare(
+      `SELECT h.session_id FROM input_history h JOIN session s ON s.id = h.session_id
+       WHERE h.session_id IS NOT NULL AND s.parent_id IS NULL AND s.time_archived IS NULL
+         AND s.id NOT LIKE '%subagent%'
+       ORDER BY h.time_created DESC LIMIT 1`
+    ).get();
     const active = db.prepare(
-      `SELECT id FROM session
+      `SELECT id, title, time_updated FROM session
        WHERE parent_id IS NULL AND time_archived IS NULL AND id NOT LIKE '%subagent%'
        ORDER BY time_updated DESC LIMIT 1`
     ).get();
-    const sid = (active && active.id)
+    const sid = (curInput && curInput.session_id)
+      || (active && active.id)
       || db.prepare("SELECT session_id FROM model_usage WHERE query_source='main_turn' ORDER BY started_at DESC LIMIT 1").get()?.session_id
       || null;
     if (!sid) return { ok: true, empty: true };
+    const otherActive = active && active.id !== sid
+      ? { id: active.id, title: (active.title || active.id.slice(5, 17)).slice(0, 40), agoMs: Date.now() - active.time_updated }
+      : null;
 
     const lastTurnId = db.prepare(
       "SELECT turn_id FROM model_usage WHERE session_id=? AND query_source='main_turn' ORDER BY started_at DESC LIMIT 1"
@@ -95,6 +109,7 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
         outTokens: last.output_tokens, toolCalls: last.tool_call_count,
       },
       turns,
+      otherActive,
     };
   } catch (e) {
     return { ok: false, reason: e.message };
