@@ -36,7 +36,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     for (const w of BrowserWindow.getAllWindows()) {
-      if (!w.isDestroyed()) { w.show(); w.focus(); }
+      if (!w.isDestroyed()) { w.showInactive(); } // 窗口不可聚焦,show 即可
     }
   });
   app.whenReady().then(start);
@@ -91,6 +91,7 @@ function start() {
     frame: false,
     transparent: true,
     thickFrame: false, // Windows 透明无边框窗必须关掉,否则 DPI 缩放下内容与窗口错位/被裁
+    focusable: false, // 拖动/点击永不抢占前台,避免 ZCode 失焦
     resizable: false,
     maximizable: false,
     fullscreenable: false,
