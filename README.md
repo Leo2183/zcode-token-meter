@@ -6,7 +6,7 @@ token-meter 的置顶悬浮窗：按可调速率（默认 2s）只读轮询 `~/.
 
 - **启动**：token-meter 插件的 `overlay-launch.mjs` 挂在 SessionStart / UserPromptSubmit 上，发现悬浮窗没在跑（查 `~/.zcode/zcode-token-meter.json` 里的 pid）就 detached 拉起一次，幂等。
 - **关闭**：悬浮窗每 5s 探测 `ZCode.exe`，连续两次探测不到即自动退出（约 10s 后消失）。
-- **z 序跟随（按屏幕遮挡判定）**：`follow.ps1` 每 400ms 探测——ZCode 最小化、或前台窗口与 ZCode **同屏且矩形相交**（真遮挡）时隐藏；前台在**别的屏幕**（如在副屏操作其他应用）或同屏但不与 ZCode 重叠时**保持显示**；ZCode 回前台自动恢复；点击悬浮窗自身不算失焦。探测进程异常退出则回退为常显。开关：`ZCODE_TOKEN_METER_OVERLAY_ZORDER=0`。已知取巧：ZCode 最大化时系统矩形含 8px 隐形边框，点任务栏会被判为遮挡而隐藏。
+- **z 序绑定（owned window）**：`owner.ps1` 在启动时把悬浮窗设为 ZCode 主窗口的 owned window（`GWL_HWNDPARENT`）——最小化、被遮挡、恢复全部由 Windows 原生语义处理：ZCode 最小化/被盖时悬浮窗随之隐藏/被盖，ZCode 可见（哪怕不在前台、在副屏无遮挡）时保持显示。替代了旧的 400ms 轮询探测。绑定失败时回退为常置顶独立窗；开关：`ZCODE_TOKEN_METER_OVERLAY_ZORDER=0`。已知边界：ZCode 在前台但停留在非对话页面（设置等）时仍会显示——页面路由从进程外部不可探测（窗口标题/菜单恒定、UIA 树未启用），如需精确可给 ZCode 加 `--remote-debugging-port` 走 CDP。
 - 手动启动仍可用：`npm start`。关闭跟随：环境变量 `ZCODE_TOKEN_METER_OVERLAY=0`（hook 不再拉起）或 `ZCODE_TOKEN_METER_OVERLAY_FOLLOW=0`（悬浮窗不再自动退出）。
 - 已知边界：pid 复用极端情况下会误判"已在跑"，重启 ZCode 会话即可恢复。
 
