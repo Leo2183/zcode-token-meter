@@ -11,12 +11,17 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from '
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectSnapshot } from './meter.mjs';
+import { collectSnapshot, defaultDbPath } from './meter.mjs';
+import { statSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(homedir(), '.zcode', 'zcode-token-meter.json');
 const POLL_MS = Math.max(500, Number(process.env.ZCODE_TOKEN_METER_OVERLAY_POLL_MS) || 2000);
+// 空闲自适应:无数据变化超过 IDLE_AFTER 后,探测间隔拉长 POLL_MS*SLOW_MULT;
+// 闸门是 db.sqlite/-wal/-shm 的 mtime,不变就不开 SQLite,空闲时成本≈0
+const IDLE_AFTER = Math.max(30000, Number(process.env.ZCODE_TOKEN_METER_OVERLAY_IDLE_MS) || 180000);
+const SLOW_MULT = 5;
 const WATCH_MS = 5000;
 const WATCH_PROC = process.env.ZCODE_TOKEN_METER_OVERLAY_PROC || 'ZCode.exe';
 const FOLLOW = process.env.ZCODE_TOKEN_METER_OVERLAY_FOLLOW !== '0';
@@ -77,6 +82,16 @@ async function zcodeAlive() {
     const { stdout } = await execFileAsync('tasklist', ['/FI', `IMAGENAME eq ${WATCH_PROC}`, '/FO', 'CSV', '/NH']);
     return stdout.includes(WATCH_PROC);
   } catch { return true; } // 探测失败按活着算,避免误退
+}
+
+// db 三件套(SQLite WAL)的最新 mtime,作为"有没有新数据"的廉价闸门
+function dbMtime() {
+  const base = defaultDbPath();
+  let m = 0;
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { m = Math.max(m, statSync(base + suffix).mtimeMs); } catch { /* 文件不存在忽略 */ }
+  }
+  return m;
 }
 
 function start() {
@@ -148,7 +163,7 @@ function start() {
     if (y < wa.y) y = wa.y;
     win.setBounds({ x, y, width: w, height: h });
     clearTimeout(showFallback);
-    if (!win.isVisible()) win.showInactive();
+    if (!win.isVisible()) { win.showInactive(); pokePoll(); }
     saveConfig({ w, h });
   });
 
@@ -174,13 +189,31 @@ function start() {
     ]).popup({ window: win });
   });
 
-  const timer = setInterval(() => {
+  // 自适应轮询:可见时每 tick 先 stat db 文件,mtime 变了才发快照;
+  // 窗口被 z 序跟随隐藏时暂停;持续无变化超过 IDLE_AFTER 降频到 POLL_MS*SLOW_MULT
+  let pollTimer = null, lastMtime = -1, lastChangeAt = Date.now();
+  function pollTick() {
+    pollTimer = null;
     if (win.isDestroyed()) return;
-    try {
-      win.webContents.send('snapshot', collectSnapshot());
-    } catch { /* 窗口销毁竞态,下一轮跳过 */ }
-  }, POLL_MS);
-  win.on('closed', () => clearInterval(timer));
+    if (win.isVisible()) {
+      const m = dbMtime();
+      if (m !== lastMtime) {
+        lastMtime = m;
+        lastChangeAt = Date.now();
+        try { win.webContents.send('snapshot', collectSnapshot()); } catch { /* 窗口销毁竞态 */ }
+      }
+    }
+    const delay = (Date.now() - lastChangeAt > IDLE_AFTER) ? POLL_MS * SLOW_MULT : POLL_MS;
+    pollTimer = setTimeout(pollTick, delay);
+  }
+  // 显示/切回前台时立刻补一次,不等慢周期
+  function pokePoll() {
+    lastChangeAt = Date.now();
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    if (!win.isDestroyed()) pollTick();
+  }
+  pollTick();
+  win.on('closed', () => { if (pollTimer) clearTimeout(pollTimer); });
 
   // 跟随 ZCode 退出:连续两次探测不到 ZCode.exe 才退,抗瞬时抖动
   if (FOLLOW) {
@@ -211,14 +244,14 @@ function start() {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
           if (line === '1') {
-            if (!win.isDestroyed() && !win.isVisible()) win.showInactive();
+            if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(); }
           } else if (line === '0') {
             if (!win.isDestroyed() && win.isVisible()) win.hide();
           }
         }
       });
       // 探测进程死掉:回退为常显,不让悬浮窗消失
-      ps.on('exit', () => { if (!win.isDestroyed() && !win.isVisible()) win.showInactive(); });
+      ps.on('exit', () => { if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(); } });
       win.on('closed', () => ps.kill());
     }
   }
