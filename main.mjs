@@ -186,7 +186,7 @@ function start() {
     if (win.isDestroyed()) return;
     const cfg = loadConfig();
     const items = [
-      { label: '自动(双重检测)', type: 'radio', checked: !cfg.pinSid, click: () => { saveConfig({ pinSid: null }); pokePoll(); } },
+      { label: '自动(双重检测)', type: 'radio', checked: !cfg.pinSid, click: () => { saveConfig({ pinSid: null }); pokePoll(true); } },
       { type: 'separator' },
     ];
     for (const s of listSessions(8)) {
@@ -194,7 +194,7 @@ function start() {
         label: s.title.slice(0, 24) + ' · ' + rel(s.agoMs),
         type: 'radio',
         checked: cfg.pinSid === s.id,
-        click: () => { saveConfig({ pinSid: s.id }); pokePoll(); },
+        click: () => { saveConfig({ pinSid: s.id }); pokePoll(true); },
       });
     }
     Menu.buildFromTemplate(items).popup({ window: win });
@@ -217,14 +217,16 @@ function start() {
   });
 
   // 自适应轮询:可见时每 tick 先 stat db 文件,mtime 变了才发快照;
-  // 窗口被 z 序跟随隐藏时暂停;持续无变化超过 IDLE_AFTER 降频到 POLL_MS*SLOW_MULT
+  // 窗口被 z 序跟随隐藏时暂停;持续无变化超过 IDLE_AFTER 降频到 POLL_MS*SLOW_MULT。
+  // force=true 绕过 mtime 闸门立即重查——切换/固定会话、恢复显示时必须用:
+  // 固定一个不活跃会话不会产生 db 写入,闸门不知道"想看的数据变了"。
   let pollTimer = null, lastMtime = -1, lastChangeAt = Date.now();
-  function pollTick() {
+  function pollTick(force = false) {
     pollTimer = null;
     if (win.isDestroyed()) return;
     if (win.isVisible()) {
       const m = dbMtime();
-      if (m !== lastMtime) {
+      if (force || m !== lastMtime) {
         lastMtime = m;
         lastChangeAt = Date.now();
         try {
@@ -236,11 +238,11 @@ function start() {
     const delay = (Date.now() - lastChangeAt > IDLE_AFTER) ? POLL_MS * SLOW_MULT : POLL_MS;
     pollTimer = setTimeout(pollTick, delay);
   }
-  // 显示/切回前台时立刻补一次,不等慢周期
-  function pokePoll() {
+  // 显示/切回前台/菜单选择时立刻补一次,不等慢周期
+  function pokePoll(force = false) {
     lastChangeAt = Date.now();
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    if (!win.isDestroyed()) pollTick();
+    if (!win.isDestroyed()) pollTick(force);
   }
   pollTick();
   win.on('closed', () => { if (pollTimer) clearTimeout(pollTimer); });
@@ -274,7 +276,7 @@ function start() {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
           if (line === '1') {
-            if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(); }
+            if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(true); }
           } else if (line === '0') {
             if (!win.isDestroyed() && win.isVisible()) win.hide();
           }
