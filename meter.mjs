@@ -19,7 +19,24 @@ function rowTps(r) {
   return decodeMs > 0 && r.output_tokens ? r.output_tokens / (decodeMs / 1000) : null;
 }
 
-export function collectSnapshot(dbPath = defaultDbPath()) {
+// 最近的顶层会话(供手动切换菜单用):标题 + 相对活跃时间
+export function listSessions(limit = 8) {
+  const dbPath = defaultDbPath();
+  if (!existsSync(dbPath)) return [];
+  let db;
+  try { db = new DatabaseSync(dbPath, { readOnly: true }); } catch { return []; }
+  try {
+    return db.prepare(
+      `SELECT id, title, time_updated FROM session
+       WHERE parent_id IS NULL AND time_archived IS NULL AND id NOT LIKE '%subagent%'
+       ORDER BY time_updated DESC LIMIT ?`
+    ).all(limit).map(s => ({ id: s.id, title: s.title || s.id.slice(5, 17), agoMs: Date.now() - s.time_updated }));
+  } catch { return []; }
+  finally { try { db.close(); } catch {} }
+}
+
+export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
+  const pinSid = opts.pinSid || null; // 手动固定的会话;null=自动双重检测
   if (!existsSync(dbPath)) return { ok: false, reason: 'no-db' };
   let db;
   try { db = new DatabaseSync(dbPath, { readOnly: true }); }
@@ -44,10 +61,21 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
        WHERE parent_id IS NULL AND time_archived IS NULL AND id NOT LIKE '%subagent%'
        ORDER BY time_updated DESC LIMIT 1`
     ).get();
-    const sid = (curInput && curInput.session_id)
-      || (active && active.id)
-      || db.prepare("SELECT session_id FROM model_usage WHERE query_source='main_turn' ORDER BY started_at DESC LIMIT 1").get()?.session_id
-      || null;
+    // 手动固定优先;固定目标失效(归档/删除)则回落自动
+    let pinned = false;
+    let sid = null;
+    if (pinSid) {
+      const p = db.prepare(
+        'SELECT id FROM session WHERE id=? AND parent_id IS NULL AND time_archived IS NULL'
+      ).get(pinSid);
+      if (p) { sid = p.id; pinned = true; }
+    }
+    if (!sid) {
+      sid = (curInput && curInput.session_id)
+        || (active && active.id)
+        || db.prepare("SELECT session_id FROM model_usage WHERE query_source='main_turn' ORDER BY started_at DESC LIMIT 1").get()?.session_id
+        || null;
+    }
     if (!sid) return { ok: true, empty: true };
     const otherActive = active && active.id !== sid
       ? { id: active.id, title: (active.title || active.id.slice(5, 17)).slice(0, 40), agoMs: Date.now() - active.time_updated }
@@ -93,7 +121,7 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
 
     return {
       ok: true, ts: Date.now(),
-      session: { id: sid, model: last.model_id || null, title: db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title || null },
+      session: { id: sid, model: last.model_id || null, title: db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title || null, pinned },
       turn: {
         id: lastTurnId,
         requests: rows.length,

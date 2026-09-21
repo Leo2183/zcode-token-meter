@@ -11,7 +11,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from '
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectSnapshot, defaultDbPath } from './meter.mjs';
+import { collectSnapshot, defaultDbPath, listSessions } from './meter.mjs';
 import { statSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
@@ -178,6 +178,28 @@ function start() {
     if (!win.isDestroyed()) saveConfig({ capsule: !!on });
   });
 
+  // 会话切换菜单:自动(双重检测) 或 强制固定到某个最近会话
+  const rel = (ms) => ms < 60000 ? '刚刚'
+    : ms < 3600000 ? Math.round(ms / 60000) + ' 分钟前'
+    : Math.round(ms / 3600000) + ' 小时前';
+  ipcMain.on('overlay:pick', () => {
+    if (win.isDestroyed()) return;
+    const cfg = loadConfig();
+    const items = [
+      { label: '自动(双重检测)', type: 'radio', checked: !cfg.pinSid, click: () => { saveConfig({ pinSid: null }); pokePoll(); } },
+      { type: 'separator' },
+    ];
+    for (const s of listSessions(8)) {
+      items.push({
+        label: s.title.slice(0, 24) + ' · ' + rel(s.agoMs),
+        type: 'radio',
+        checked: cfg.pinSid === s.id,
+        click: () => { saveConfig({ pinSid: s.id }); pokePoll(); },
+      });
+    }
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
+
   // 右键菜单:字号预设 + 退出
   win.webContents.on('context-menu', () => {
     if (win.isDestroyed()) return;
@@ -205,7 +227,10 @@ function start() {
       if (m !== lastMtime) {
         lastMtime = m;
         lastChangeAt = Date.now();
-        try { win.webContents.send('snapshot', collectSnapshot()); } catch { /* 窗口销毁竞态 */ }
+        try {
+          const { pinSid } = loadConfig();
+          win.webContents.send('snapshot', collectSnapshot(defaultDbPath(), { pinSid }));
+        } catch { /* 窗口销毁竞态 */ }
       }
     }
     const delay = (Date.now() - lastChangeAt > IDLE_AFTER) ? POLL_MS * SLOW_MULT : POLL_MS;

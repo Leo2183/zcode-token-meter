@@ -40,8 +40,9 @@
   .model {
     color: var(--dim); background: rgba(255,255,255,0.06);
     padding: 0 6px; border-radius: 999px; font-size: 9.5px;
-    max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .model.pinned { border: 1px solid var(--amber); color: var(--amber); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); margin-left: auto; }
   .dot.completed { background: var(--accent); }
   .dot.error { background: var(--red); }
@@ -107,10 +108,11 @@
 <body>
 <div class="card" id="card">
   <div class="hdr">
-    <span class="logo">⚡ token-meter</span>
+    <span class="logo" title="token-meter">⚡</span>
     <span class="model" id="model">…</span>
     <span class="other-dot" id="otherDot" title=""></span>
     <span class="dot" id="dot"></span>
+    <button class="btn" id="pickBtn" title="切换会话 / 强制刷新">⟳</button>
     <button class="btn" id="fontBtn" title="字号(或 Ctrl+滚轮 / 右键菜单)">Aa</button>
     <button class="btn" id="shrinkBtn" title="缩小为胶囊">—</button>
     <button class="btn close" id="close" title="退出">✕</button>
@@ -195,6 +197,7 @@
   }
   $('shrinkBtn').addEventListener('click', () => setCapsule(true));
   $('restoreBtn').addEventListener('click', () => setCapsule(false));
+  $('pickBtn').addEventListener('click', () => window.overlay.pick());
 
   // ---- 高度自适应:实测卡片尺寸上报主进程,变化>=1px 才发 ----
   let lastW = 0, lastH = 0;
@@ -247,9 +250,10 @@
     lastTs = s.ts;
     const titleEl = $('model');
     titleEl.textContent = s.session.title || s.session.model || '–';
-    titleEl.title = s.session.title
-      ? s.session.title + (s.session.model ? ' · ' + s.session.model : '')
-      : (s.session.model || '');
+    titleEl.classList.toggle('pinned', !!s.session.pinned);
+    titleEl.title = (s.session.pinned ? '[已固定] ' : '')
+      + (s.session.title || '')
+      + (s.session.model ? ' · ' + s.session.model : '');
     $('dot').className = 'dot ' + (s.turn.lastStatus || '');
     // 双重检测提示:另有会话(如定时任务)在活动时亮黄点,悬停看标题
     const od = $('otherDot');
