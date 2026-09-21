@@ -197,7 +197,9 @@
   function setCapsule(on, notify = true) {
     if (on === capsule) return;
     applyCapsule(on);
-    if (notify) window.overlay.setCapsule(on);
+    // 胶囊/完整卡是两套 DOM,切换后必须立刻要一次快照填充数值,
+    // 否则要等下一次 db 写入(mtime 闸门)才会更新——空闲时看起来就是"没有数值"
+    if (notify) { window.overlay.setCapsule(on); window.overlay.refresh(); }
   }
   $('shrinkBtn').addEventListener('click', () => setCapsule(true));
   $('restoreBtn').addEventListener('click', () => setCapsule(false));

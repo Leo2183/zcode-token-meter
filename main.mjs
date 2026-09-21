@@ -195,6 +195,11 @@ function start() {
     if (!win.isDestroyed()) saveConfig({ capsule: !!on });
   });
 
+  // 渲染层主动要一次快照(切换胶囊态等场景:DOM 换了一套,等 mtime 变化太慢)
+  ipcMain.on('overlay:refresh', () => {
+    if (!win.isDestroyed()) pokePoll(true);
+  });
+
   // 会话切换菜单:自动(双重检测) 或 强制固定到某个最近会话
   const rel = (ms) => ms < 60000 ? '刚刚'
     : ms < 3600000 ? Math.round(ms / 60000) + ' 分钟前'
