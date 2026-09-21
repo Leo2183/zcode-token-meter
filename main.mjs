@@ -25,7 +25,8 @@ const SLOW_MULT = 5;
 const WATCH_MS = 5000;
 const WATCH_PROC = process.env.ZCODE_TOKEN_METER_OVERLAY_PROC || 'ZCode.exe';
 const FOLLOW = process.env.ZCODE_TOKEN_METER_OVERLAY_FOLLOW !== '0';
-// z 序跟随:ZCode 最小化/失焦(被遮挡)时隐藏,回前台时恢复;探测由 follow.ps1 完成
+// 层级绑定:把悬浮窗设为 ZCode 主窗口的 owned window(owner.ps1),最小化/遮挡跟随全部交给系统;
+// ZORDER=0 时退回旧的"常置顶独立窗"行为
 const ZORDER = process.env.ZCODE_TOKEN_METER_OVERLAY_ZORDER !== '0';
 const BASE_W = 260;
 const FALLBACK_H = 180;
@@ -127,7 +128,8 @@ function start() {
       nodeIntegration: false,
     },
   });
-  win.setAlwaysOnTop(true, 'screen-saver');
+  // 绑定为 owned window 时不能置顶(owner 关系负责层级);仅退回独立模式时置顶
+  if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示
@@ -273,33 +275,17 @@ function start() {
     win.on('closed', () => clearInterval(watcher));
   }
 
-  // z 序跟随:follow.ps1 每 400ms 输出 1/0,1=ZCode 在前台未最小化(显示),0=隐藏
+  // 绑定为 ZCode 主窗口的 owned window(GWL_HWNDPARENT):最小化/被遮挡/恢复全部由
+  // 系统原生处理,替代旧的 400ms 轮询探测;owner.ps1 等悬浮窗可见后绑定一次即退出。
+  // ZORDER=0 退回旧的常置顶行为。
   if (ZORDER) {
-    let ps = null;
     try {
-      ps = spawn('powershell', [
+      // owner.ps1 自读配置文件里的 pid,无需传参(注意:该文件带 UTF-8 BOM,PS5.1 才能正确解析中文注释)
+      const ps = spawn('powershell', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(HERE, 'follow.ps1'), '-OverlayPid', String(process.pid),
-      ], { stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { /* 启动失败回退常显 */ }
-    if (ps) {
-      let buf = '';
-      ps.stdout.on('data', (d) => {
-        buf += d.toString();
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (line === '1') {
-            if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(true); }
-          } else if (line === '0') {
-            if (!win.isDestroyed() && win.isVisible()) win.hide();
-          }
-        }
-      });
-      // 探测进程死掉:回退为常显,不让悬浮窗消失
-      ps.on('exit', () => { if (!win.isDestroyed() && !win.isVisible()) { win.showInactive(); pokePoll(); } });
+        '-File', path.join(HERE, 'owner.ps1'),
+      ], { stdio: ['ignore', 'ignore', 'ignore'] });
       win.on('closed', () => ps.kill());
-    }
+    } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }
   }
 }
