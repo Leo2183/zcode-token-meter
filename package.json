@@ -1,0 +1,14 @@
+{
+  "name": "zcode-token-meter",
+  "version": "0.1.0",
+  "description": "token-meter 置顶悬浮窗:轮询 ~/.zcode/cli/db/db.sqlite 实时显示 TTFT/解码速度/上下文/累计 token",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.4.3"
+  }
+}

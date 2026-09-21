@@ -1,0 +1,224 @@
+// main.mjs — token-meter 悬浮窗主进程
+// 无边框置顶小窗,按 ZCODE_TOKEN_METER_OVERLAY_POLL_MS(默认 2s)只读轮询 db.sqlite。
+// 窗口自适应:宽度=基准宽x字号缩放,高度由渲染层实测内容高度上报,主进程据此 setContentSize
+// 并夹回工作区内。字号(存于 ~/.zcode/zcode-token-meter.json 的 scale)支持右键菜单与渲染层上报。
+// 跟随 ZCode:pid 写入配置供插件 hook 幂等拉起;每 5s 探测 ZCode.exe,连续两次不在则退出。
+
+import { app, BrowserWindow, screen, ipcMain, Menu } from 'electron';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { collectSnapshot } from './meter.mjs';
+
+const execFileAsync = promisify(execFile);
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const CONFIG_PATH = path.join(homedir(), '.zcode', 'zcode-token-meter.json');
+const POLL_MS = Math.max(500, Number(process.env.ZCODE_TOKEN_METER_OVERLAY_POLL_MS) || 2000);
+const WATCH_MS = 5000;
+const WATCH_PROC = process.env.ZCODE_TOKEN_METER_OVERLAY_PROC || 'ZCode.exe';
+const FOLLOW = process.env.ZCODE_TOKEN_METER_OVERLAY_FOLLOW !== '0';
+// z 序跟随:ZCode 最小化/失焦(被遮挡)时隐藏,回前台时恢复;探测由 follow.ps1 完成
+const ZORDER = process.env.ZCODE_TOKEN_METER_OVERLAY_ZORDER !== '0';
+const BASE_W = 260;
+const FALLBACK_H = 180;
+const MENU_SCALES = [
+  { s: 0.85, label: '小 (85%)' },
+  { s: 1.0, label: '标准 (100%)' },
+  { s: 1.15, label: '大 (115%)' },
+  { s: 1.3, label: '特大 (130%)' },
+];
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) { w.show(); w.focus(); }
+    }
+  });
+  app.whenReady().then(start);
+}
+
+function loadConfig() {
+  try { return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { return {}; }
+}
+
+function saveConfig(patch) {
+  try {
+    mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+    // 读-改-写非原子,短暂的重启过渡期可能有两进程同时写;先写临时文件再替换,减少整段丢失
+    const tmp = CONFIG_PATH + '.tmp';
+    writeFileSync(tmp, JSON.stringify({ ...loadConfig(), ...patch }));
+    renameSync(tmp, CONFIG_PATH);
+  } catch { /* 位置记忆失败不致命 */ }
+}
+
+// 恢复的位置必须仍落在某块屏幕的工作区内,否则回默认(主屏右上角)
+function resolvePosition(cfg) {
+  const w = Number.isFinite(cfg.w) ? cfg.w : BASE_W * (cfg.scale || 1);
+  const h = Number.isFinite(cfg.h) ? cfg.h : FALLBACK_H;
+  if (Number.isFinite(cfg.x) && Number.isFinite(cfg.y)) {
+    const rect = { x: cfg.x, y: cfg.y, width: w, height: h };
+    const wa = screen.getDisplayMatching(rect).workArea;
+    if (cfg.x >= wa.x && cfg.y >= wa.y
+      && cfg.x + w <= wa.x + wa.width && cfg.y + h <= wa.y + wa.height) {
+      return { x: cfg.x, y: cfg.y };
+    }
+  }
+  const wa = screen.getPrimaryDisplay().workArea;
+  return { x: wa.x + wa.width - w - 16, y: wa.y + 12 };
+}
+
+async function zcodeAlive() {
+  try {
+    const { stdout } = await execFileAsync('tasklist', ['/FI', `IMAGENAME eq ${WATCH_PROC}`, '/FO', 'CSV', '/NH']);
+    return stdout.includes(WATCH_PROC);
+  } catch { return true; } // 探测失败按活着算,避免误退
+}
+
+function start() {
+  const cfg = loadConfig();
+  const scale = Number.isFinite(cfg.scale) && cfg.scale > 0 ? cfg.scale : 1;
+  const pos = resolvePosition(cfg);
+  const win = new BrowserWindow({
+    width: Math.round(BASE_W * scale),
+    height: Math.round((Number.isFinite(cfg.h) ? cfg.h : FALLBACK_H)),
+    x: pos.x,
+    y: pos.y,
+    frame: false,
+    transparent: true,
+    thickFrame: false, // Windows 透明无边框窗必须关掉,否则 DPI 缩放下内容与窗口错位/被裁
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    show: false,
+    useContentSize: true,
+    webPreferences: {
+      preload: path.join(HERE, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.loadFile(path.join(HERE, 'renderer.html'));
+
+  // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示
+  const showFallback = setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) win.showInactive();
+  }, 1500);
+  win.once('ready-to-show', () => {
+    saveConfig({ pid: process.pid }); // 供插件 hook 判断是否需要拉起
+  });
+
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.send('overlay:init', { scale });
+  });
+
+  win.on('closed', () => app.quit());
+  app.on('will-quit', () => saveConfig({ pid: null }));
+
+  // 位置记忆:move 事件高频,防抖 500ms 落盘
+  let saveTimer = null;
+  win.on('move', () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      const [x, y] = win.getPosition();
+      saveConfig({ x, y, pid: process.pid });
+    }, 500);
+  });
+
+  ipcMain.handle('overlay:quit', () => app.quit());
+
+  // 渲染层实测内容尺寸 → 调整窗口并夹回工作区,同时记忆尺寸供下次启动校验
+  ipcMain.on('overlay:resize', (_e, sz) => {
+    if (win.isDestroyed() || !sz || !Number.isFinite(sz.w) || !Number.isFinite(sz.h)) return;
+    const w = Math.max(120, Math.round(sz.w));
+    const h = Math.max(60, Math.round(sz.h));
+    const wa = screen.getDisplayMatching({ ...win.getBounds(), width: w, height: h }).workArea;
+    let [x, y] = win.getPosition();
+    if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
+    if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
+    if (x < wa.x) x = wa.x;
+    if (y < wa.y) y = wa.y;
+    win.setBounds({ x, y, width: w, height: h });
+    clearTimeout(showFallback);
+    if (!win.isVisible()) win.showInactive();
+    saveConfig({ w, h });
+  });
+
+  // 字号持久化(渲染层 Aa 按钮/ctrl+滚轮触发;菜单触发时回推给渲染层应用)
+  ipcMain.on('overlay:scale', (_e, s) => {
+    if (win.isDestroyed() || !Number.isFinite(s) || s <= 0.5 || s >= 2.5) return;
+    saveConfig({ scale: Math.round(s * 100) / 100 });
+  });
+
+  // 右键菜单:字号预设 + 退出
+  win.webContents.on('context-menu', () => {
+    if (win.isDestroyed()) return;
+    const cur = loadConfig().scale || 1;
+    Menu.buildFromTemplate([
+      ...MENU_SCALES.map(({ s, label }) => ({
+        label,
+        type: 'radio',
+        checked: Math.abs(s - cur) < 0.01,
+        click: () => win.webContents.send('overlay:scale', s),
+      })),
+      { type: 'separator' },
+      { label: '退出', click: () => app.quit() },
+    ]).popup({ window: win });
+  });
+
+  const timer = setInterval(() => {
+    if (win.isDestroyed()) return;
+    try {
+      win.webContents.send('snapshot', collectSnapshot());
+    } catch { /* 窗口销毁竞态,下一轮跳过 */ }
+  }, POLL_MS);
+  win.on('closed', () => clearInterval(timer));
+
+  // 跟随 ZCode 退出:连续两次探测不到 ZCode.exe 才退,抗瞬时抖动
+  if (FOLLOW) {
+    let misses = 0;
+    const watcher = setInterval(async () => {
+      if (win.isDestroyed()) { clearInterval(watcher); return; }
+      if (await zcodeAlive()) misses = 0;
+      else if (++misses >= 2) app.quit();
+    }, WATCH_MS);
+    win.on('closed', () => clearInterval(watcher));
+  }
+
+  // z 序跟随:follow.ps1 每 400ms 输出 1/0,1=ZCode 在前台未最小化(显示),0=隐藏
+  if (ZORDER) {
+    let ps = null;
+    try {
+      ps = spawn('powershell', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(HERE, 'follow.ps1'), '-OverlayPid', String(process.pid),
+      ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { /* 启动失败回退常显 */ }
+    if (ps) {
+      let buf = '';
+      ps.stdout.on('data', (d) => {
+        buf += d.toString();
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line === '1') {
+            if (!win.isDestroyed() && !win.isVisible()) win.showInactive();
+          } else if (line === '0') {
+            if (!win.isDestroyed() && win.isVisible()) win.hide();
+          }
+        }
+      });
+      // 探测进程死掉:回退为常显,不让悬浮窗消失
+      ps.on('exit', () => { if (!win.isDestroyed() && !win.isVisible()) win.showInactive(); });
+      win.on('closed', () => ps.kill());
+    }
+  }
+}
