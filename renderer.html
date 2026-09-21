@@ -25,6 +25,7 @@
   }
   .card {
     position: relative;
+    width: 260px; /* 正常态定宽,zoom 随字号缩放;窗口尺寸由 measure() 上报适配 */
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 11px;
@@ -50,6 +51,19 @@
   }
   .btn:hover { color: var(--text); }
   .btn.close:hover { color: var(--red); }
+
+  /* 胶囊态:整卡变药丸行,只留 tok/s 与 TTFT */
+  .card.capsule { border-radius: 999px; padding: 7px 11px; flex-direction: row; align-items: center; gap: 8px; width: fit-content; }
+  #cap { display: none; align-items: baseline; gap: 7px; flex-wrap: nowrap; }
+  #cap .c-tps, #cap .c-ttft, #cap .c-unit, #cap .c-logo { flex-shrink: 0; white-space: nowrap; }
+  .card.capsule #cap { display: flex; }
+  .card.capsule .hdr, .card.capsule #body, .card.capsule #empty, .card.capsule .ftr { display: none !important; }
+  #cap .c-logo { color: var(--accent); font-weight: 700; font-size: 11px; }
+  #cap .c-tps { color: var(--accent); font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+  #cap .c-tps.flash { animation: flash 0.9s ease-out; }
+  #cap .c-unit { font-size: 9px; color: var(--dim); }
+  #cap .c-ttft { color: var(--blue); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #cap .btn { font-size: 12px; padding: 1px 4px; }
 
   .big { display: flex; align-items: baseline; gap: 10px; }
   .big .tps { color: var(--accent); font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
@@ -91,7 +105,15 @@
     <span class="model" id="model">…</span>
     <span class="dot" id="dot"></span>
     <button class="btn" id="fontBtn" title="字号(或 Ctrl+滚轮 / 右键菜单)">Aa</button>
+    <button class="btn" id="shrinkBtn" title="缩小为胶囊">—</button>
     <button class="btn close" id="close" title="退出">✕</button>
+  </div>
+
+  <div id="cap">
+    <span class="c-logo">⚡</span>
+    <span class="c-tps" id="capTps">–</span><span class="c-unit">tok/s</span>
+    <span class="c-ttft" id="capTtft">–</span>
+    <button class="btn" id="restoreBtn" title="恢复完整窗口">▢</button>
   </div>
 
   <div id="body" style="display:none; flex-direction:column; gap:6px;">
@@ -153,6 +175,20 @@
     setScale(scale * (e.deltaY < 0 ? 1.06 : 1 / 1.06));
   }, { passive: false });
 
+  // ---- 胶囊态:只留 tok/s 与 TTFT 的药丸行,尺寸经 measure() 自动上报收缩 ----
+  let capsule = false;
+  function applyCapsule(on) {
+    capsule = !!on;
+    $('card').classList.toggle('capsule', capsule);
+  }
+  function setCapsule(on, notify = true) {
+    if (on === capsule) return;
+    applyCapsule(on);
+    if (notify) window.overlay.setCapsule(on);
+  }
+  $('shrinkBtn').addEventListener('click', () => setCapsule(true));
+  $('restoreBtn').addEventListener('click', () => setCapsule(false));
+
   // ---- 高度自适应:实测卡片尺寸上报主进程,变化>=1px 才发 ----
   let lastW = 0, lastH = 0;
   function measure() {
@@ -165,7 +201,9 @@
   }
   new ResizeObserver(() => requestAnimationFrame(measure)).observe($('card'));
 
-  window.overlay.onInit(({ scale: s }) => { if (!inited) { inited = true; applyScale(s); } });
+  window.overlay.onInit(({ scale: s, capsule: c }) => {
+    if (!inited) { inited = true; applyScale(s); applyCapsule(!!c); }
+  });
   window.overlay.onScale((s) => { if (Math.abs(s - scale) >= 0.005) applyScale(s); });
 
   // ---- 渲染 ----
@@ -173,6 +211,22 @@
   let lastRowId = null;
 
   function render(s) {
+    if (capsule) {
+      if (s && s.ok === true && !s.empty) {
+        const capTps = $('capTps');
+        const tps = s.turn.tps;
+        capTps.textContent = tps ? tps.toFixed(0) : '–';
+        if (s.turn.lastId && s.turn.lastId !== lastRowId) {
+          capTps.classList.remove('flash'); void capTps.offsetWidth; capTps.classList.add('flash');
+          lastRowId = s.turn.lastId;
+        }
+        $('capTtft').textContent = 'TTFT ' + fmtMs(s.turn.ttftMs);
+      } else {
+        $('capTps').textContent = '–';
+        $('capTtft').textContent = 'TTFT –';
+      }
+      return;
+    }
     if (!s || s.ok !== true || s.empty) {
       $('empty').style.display = '';
       $('body').style.display = 'none';

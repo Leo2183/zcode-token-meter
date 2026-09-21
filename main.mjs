@@ -131,7 +131,7 @@ function start() {
   });
 
   win.webContents.on('did-finish-load', () => {
-    win.webContents.send('overlay:init', { scale });
+    win.webContents.send('overlay:init', { scale, capsule: !!cfg.capsule });
   });
 
   win.on('closed', () => app.quit());
@@ -153,8 +153,8 @@ function start() {
   // 渲染层实测内容尺寸 → 调整窗口并夹回工作区,同时记忆尺寸供下次启动校验
   ipcMain.on('overlay:resize', (_e, sz) => {
     if (win.isDestroyed() || !sz || !Number.isFinite(sz.w) || !Number.isFinite(sz.h)) return;
-    const w = Math.max(120, Math.round(sz.w));
-    const h = Math.max(60, Math.round(sz.h));
+    const w = Math.max(100, Math.round(sz.w));
+    const h = Math.max(24, Math.round(sz.h));
     const wa = screen.getDisplayMatching({ ...win.getBounds(), width: w, height: h }).workArea;
     let [x, y] = win.getPosition();
     if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
@@ -171,6 +171,11 @@ function start() {
   ipcMain.on('overlay:scale', (_e, s) => {
     if (win.isDestroyed() || !Number.isFinite(s) || s <= 0.5 || s >= 2.5) return;
     saveConfig({ scale: Math.round(s * 100) / 100 });
+  });
+
+  // 胶囊态持久化
+  ipcMain.on('overlay:capsule', (_e, on) => {
+    if (!win.isDestroyed()) saveConfig({ capsule: !!on });
   });
 
   // 右键菜单:字号预设 + 退出

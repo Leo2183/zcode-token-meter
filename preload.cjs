@@ -6,5 +6,6 @@ contextBridge.exposeInMainWorld('overlay', {
   onScale: (cb) => ipcRenderer.on('overlay:scale', (_e, v) => cb(v)),
   resize: (sz) => ipcRenderer.send('overlay:resize', sz),
   setScale: (s) => ipcRenderer.send('overlay:scale', s),
+  setCapsule: (on) => ipcRenderer.send('overlay:capsule', on),
   quit: () => ipcRenderer.invoke('overlay:quit'),
 });
