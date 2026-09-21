@@ -61,9 +61,17 @@ function saveConfig(patch) {
   } catch { /* 位置记忆失败不致命 */ }
 }
 
+// 分辨率自适应:以 1920x1080 为 1.0 基准按工作区比例缩放;
+// 比例 <1.15 视为 1(1080p 级屏幕保持现状),上限 1.6、下限 0.75。
+// 用户字号倍率在渲染层叠加于其上;拖到另一块屏时 move 处理器里重算并推送。
+function autoScaleFor(rect) {
+  const wa = screen.getDisplayMatching(rect).workArea;
+  const r = Math.min(wa.width / 1920, wa.height / 1080);
+  return r < 1.15 ? 1 : Math.min(1.6, Math.max(0.75, r));
+}
+
 // 恢复的位置必须仍落在某块屏幕的工作区内,否则回默认(主屏右上角)
-function resolvePosition(cfg) {
-  const w = Number.isFinite(cfg.w) ? cfg.w : BASE_W * (cfg.scale || 1);
+function resolvePosition(cfg) {  const w = Number.isFinite(cfg.w) ? cfg.w : BASE_W * (cfg.scale || 1);
   const h = Number.isFinite(cfg.h) ? cfg.h : FALLBACK_H;
   if (Number.isFinite(cfg.x) && Number.isFinite(cfg.y)) {
     const rect = { x: cfg.x, y: cfg.y, width: w, height: h };
@@ -131,20 +139,27 @@ function start() {
   });
 
   win.webContents.on('did-finish-load', () => {
-    win.webContents.send('overlay:init', { scale, capsule: !!cfg.capsule });
+    win.webContents.send('overlay:init', { scale, autoScale: autoScaleFor(win.getBounds()), capsule: !!cfg.capsule });
   });
 
   win.on('closed', () => app.quit());
   app.on('will-quit', () => saveConfig({ pid: null }));
 
   // 位置记忆:move 事件高频,防抖 500ms 落盘
+  // 位置记忆:move 事件高频,防抖 500ms 落盘;顺带检测换了显示器→重算分辨率自适应系数
   let saveTimer = null;
+  let lastWa = screen.getDisplayMatching(win.getBounds()).workArea;
   win.on('move', () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       if (win.isDestroyed()) return;
       const [x, y] = win.getPosition();
       saveConfig({ x, y, pid: process.pid });
+      const wa = screen.getDisplayMatching(win.getBounds()).workArea;
+      if (wa.x !== lastWa.x || wa.y !== lastWa.y || wa.width !== lastWa.width || wa.height !== lastWa.height) {
+        lastWa = wa;
+        win.webContents.send('overlay:autoscale', { autoScale: autoScaleFor(win.getBounds()) });
+      }
     }, 500);
   });
 
