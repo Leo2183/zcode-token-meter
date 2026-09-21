@@ -13,6 +13,19 @@ export function defaultDbPath() {
 
 const ctxLimit = () => Number(process.env.ZCODE_TOKEN_METER_CTX_LIMIT || 1000000);
 
+// 归档/删除状态在 tasks-index.sqlite(v2)的 tasks 表里,主库 session.time_archived 恒为 NULL。
+// 挂载成功后用 NOT EXISTS 过滤;索引库不存在(别的机器)则不过滤。
+const TASKS_INDEX_PATH = path.join(homedir(), '.zcode', 'v2', 'tasks-index.sqlite');
+
+function attachTaskIndex(db) {
+  try {
+    if (!existsSync(TASKS_INDEX_PATH)) return false;
+    db.exec("ATTACH DATABASE '" + TASKS_INDEX_PATH.replaceAll('\\', '/').replaceAll("'", "''") + "' AS ti");
+    return true;
+  } catch { return false; }
+}
+const NOT_ARCHIVED = " AND NOT EXISTS (SELECT 1 FROM ti.tasks t WHERE t.task_id = s.id AND (t.archived = 1 OR t.deleted = 1))";
+
 // 单条请求的解码速度:output / (duration - ttft)
 function rowTps(r) {
   const decodeMs = Math.max(0, (r.duration_ms || 0) - (r.time_to_first_token_ms ?? 0));
@@ -26,10 +39,11 @@ export function listSessions(limit = 8) {
   let db;
   try { db = new DatabaseSync(dbPath, { readOnly: true }); } catch { return []; }
   try {
+    const ti = attachTaskIndex(db) ? NOT_ARCHIVED : '';
     return db.prepare(
-      `SELECT id, title, time_updated FROM session
-       WHERE parent_id IS NULL AND time_archived IS NULL AND id NOT LIKE '%subagent%'
-       ORDER BY time_updated DESC LIMIT ?`
+      `SELECT id, title, time_updated FROM session s
+       WHERE s.parent_id IS NULL AND s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
+       ORDER BY s.time_updated DESC LIMIT ?`
     ).all(limit).map(s => ({ id: s.id, title: s.title || s.id.slice(5, 17), agoMs: Date.now() - s.time_updated }));
   } catch { return []; }
   finally { try { db.close(); } catch {} }
@@ -43,9 +57,8 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
   catch (e) { return { ok: false, reason: 'open-failed: ' + e.message }; }
 
   try {
-    // 会话跟随:取 time_updated 最新的顶层(非子代理、未归档)会话。
-    // session.time_updated 在消息/工具等事件落库时就会刷新,不必等模型请求完成——
-    // 切换对话后一旦有输入即跟随;找不到时退回旧行为(最新 main_turn 所在会话)。
+    // 归档/删除状态挂载:见文件头说明,ti 不存在时 ${'${ti}'} 为空串、不过滤
+    const ti = attachTaskIndex(db) ? NOT_ARCHIVED : '';
     // 双重检测:
     //   当前对话 = 最近一次"用户亲手输入"(input_history)所在的顶层会话——
     //              定时/后台会话的周期触发不写 input_history,抢不走显示;
@@ -53,20 +66,20 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
     const curInput = db.prepare(
       `SELECT h.session_id FROM input_history h JOIN session s ON s.id = h.session_id
        WHERE h.session_id IS NOT NULL AND s.parent_id IS NULL AND s.time_archived IS NULL
-         AND s.id NOT LIKE '%subagent%'
+         AND s.id NOT LIKE '%subagent%'${ti}
        ORDER BY h.time_created DESC LIMIT 1`
     ).get();
     const active = db.prepare(
-      `SELECT id, title, time_updated FROM session
-       WHERE parent_id IS NULL AND time_archived IS NULL AND id NOT LIKE '%subagent%'
-       ORDER BY time_updated DESC LIMIT 1`
+      `SELECT id, title, time_updated FROM session s
+       WHERE s.parent_id IS NULL AND s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
+       ORDER BY s.time_updated DESC LIMIT 1`
     ).get();
     // 手动固定优先;固定目标失效(归档/删除)则回落自动
     let pinned = false;
     let sid = null;
     if (pinSid) {
       const p = db.prepare(
-        'SELECT id FROM session WHERE id=? AND parent_id IS NULL AND time_archived IS NULL'
+        `SELECT id FROM session s WHERE s.id=? AND s.parent_id IS NULL AND s.time_archived IS NULL${ti}`
       ).get(pinSid);
       if (p) { sid = p.id; pinned = true; }
     }
