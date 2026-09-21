@@ -56,7 +56,10 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
     const lastTurnId = db.prepare(
       "SELECT turn_id FROM model_usage WHERE session_id=? AND query_source='main_turn' ORDER BY started_at DESC LIMIT 1"
     ).get(sid)?.turn_id;
-    if (!lastTurnId) return { ok: true, empty: true, session: { id: sid, model: null } }; // 刚切到的新会话尚无请求
+    if (!lastTurnId) {
+      const t = db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title;
+      return { ok: true, empty: true, session: { id: sid, model: null, title: t || null } }; // 刚切到的新会话尚无请求
+    }
     const rows = db.prepare(
       `SELECT id, started_at, duration_ms, time_to_first_token_ms, status,
               input_tokens, output_tokens, cache_read_input_tokens, model_id, tool_call_count
@@ -90,7 +93,7 @@ export function collectSnapshot(dbPath = defaultDbPath()) {
 
     return {
       ok: true, ts: Date.now(),
-      session: { id: sid, model: last.model_id || null },
+      session: { id: sid, model: last.model_id || null, title: db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title || null },
       turn: {
         id: lastTurnId,
         requests: rows.length,

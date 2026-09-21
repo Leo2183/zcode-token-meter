@@ -40,6 +40,7 @@
   .model {
     color: var(--dim); background: rgba(255,255,255,0.06);
     padding: 0 6px; border-radius: 999px; font-size: 9.5px;
+    max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); margin-left: auto; }
   .dot.completed { background: var(--accent); }
@@ -244,7 +245,11 @@
     $('body').style.display = 'flex';
 
     lastTs = s.ts;
-    $('model').textContent = s.session.model || '–';
+    const titleEl = $('model');
+    titleEl.textContent = s.session.title || s.session.model || '–';
+    titleEl.title = s.session.title
+      ? s.session.title + (s.session.model ? ' · ' + s.session.model : '')
+      : (s.session.model || '');
     $('dot').className = 'dot ' + (s.turn.lastStatus || '');
     // 双重检测提示:另有会话(如定时任务)在活动时亮黄点,悬停看标题
     const od = $('otherDot');
@@ -326,7 +331,7 @@
       out += '</g>';
     });
     svg.innerHTML = out;
-    $('chartLegend').innerHTML = '<span style="color:#4ade80">■</span>命中 <span style="color:#fbbf24">■</span>未中 <span style="color:#7dd3fc">■</span>输出(柱高∝总量)';
+    $('chartLegend').innerHTML = '<span style="color:#4ade80">■</span>命中 <span style="color:#fbbf24">■</span>未中 <span style="color:#7dd3fc">■</span>输出';
     if (hoverIdx != null && hoverIdx < turnData.length) {
       const g = svg.querySelector('g[data-idx="' + hoverIdx + '"]');
       if (g) showTip(hoverIdx, g); else hideTip();
