@@ -42,7 +42,7 @@ export function listSessions(limit = 8) {
     const ti = attachTaskIndex(db) ? NOT_ARCHIVED : '';
     return db.prepare(
       `SELECT id, title, time_updated FROM session s
-       WHERE s.parent_id IS NULL AND s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
+       WHERE s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
        ORDER BY s.time_updated DESC LIMIT ?`
     ).all(limit).map(s => ({ id: s.id, title: s.title || s.id.slice(5, 17), agoMs: Date.now() - s.time_updated }));
   } catch { return []; }
@@ -65,13 +65,13 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
     //   活跃对话 = time_updated 最新的顶层会话(含定时任务),与当前对话不同时作为 otherActive 提示。
     const curInput = db.prepare(
       `SELECT h.session_id FROM input_history h JOIN session s ON s.id = h.session_id
-       WHERE h.session_id IS NOT NULL AND s.parent_id IS NULL AND s.time_archived IS NULL
+       WHERE h.session_id IS NOT NULL AND s.time_archived IS NULL
          AND s.id NOT LIKE '%subagent%'${ti}
        ORDER BY h.time_created DESC LIMIT 1`
     ).get();
     const active = db.prepare(
       `SELECT id, title, time_updated FROM session s
-       WHERE s.parent_id IS NULL AND s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
+       WHERE s.time_archived IS NULL AND s.id NOT LIKE '%subagent%'${ti}
        ORDER BY s.time_updated DESC LIMIT 1`
     ).get();
     // 手动固定优先;固定目标失效(归档/删除)则回落自动
@@ -79,7 +79,7 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
     let sid = null;
     if (pinSid) {
       const p = db.prepare(
-        `SELECT id FROM session s WHERE s.id=? AND s.parent_id IS NULL AND s.time_archived IS NULL${ti}`
+        `SELECT id FROM session s WHERE s.id=? AND s.time_archived IS NULL${ti}`
       ).get(pinSid);
       if (p) { sid = p.id; pinned = true; }
     }
