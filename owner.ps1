@@ -1,8 +1,9 @@
-﻿# owner.ps1 - 把悬浮窗绑定为 ZCode 主窗口的 owned window(一次性)
+﻿# owner.ps1 - 把悬浮窗绑定为 ZCode 主窗口的 owned window(守护式)
 # GWL_HWNDPARENT(-8) 设定 owner 后,Windows 原生保证:
 #   owner 最小化 -> owned 隐藏; owner 被盖 -> owned 同被盖; owner 可见 -> owned 保持其上。
-# 等悬浮窗可见窗口出现(最多 8s)后绑定一次即退出;悬浮窗每次重启由 main.mjs 重新拉起本脚本。
-# pid 直接读配置文件,避免参数传递问题。
+# ZCode 主窗口可能被重建(更新/崩溃恢复),一次性绑定会失效,故常驻:
+# 每 2s 检查悬浮窗的 owner,断链则用当前 ZCode 主窗口重绑;悬浮窗进程退出后本脚本退出。
+# pid 直接读配置文件;本文件含中文注释,必须保持 UTF-8 BOM(PS5.1 否则按 GBK 解析腐蚀 here-string)。
 Add-Type @"
 using System;using System.Runtime.InteropServices;
 public class OwnerBind {
@@ -21,20 +22,27 @@ public class OwnerBind {
  }
 }
 "@
-$cfg = Get-Content "$env:USERPROFILE\.zcode\zcode-token-meter.json" | ConvertFrom-Json
-$overlayPid = [int]$cfg.pid
-$deadline = (Get-Date).AddSeconds(8)
-$ovH = [long]0
-while ((Get-Date) -lt $deadline -and $ovH -eq 0) {
-  $ovH = [OwnerBind]::FindBiggestVisible([uint32]$overlayPid)
-  if ($ovH -eq 0) { Start-Sleep -Milliseconds 200 }
+function Get-CfgPid {
+  try { return [int]((Get-Content "$env:USERPROFILE\.zcode\zcode-token-meter.json" | ConvertFrom-Json).pid) } catch { return 0 }
 }
-$zc = Get-Process ZCode -ErrorAction SilentlyContinue |
-  Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if ($ovH -ne 0 -and $zc) {
-  [OwnerBind]::SetWindowLongPtr([IntPtr]$ovH, -8, $zc.MainWindowHandle) | Out-Null
+$overlayPid = Get-CfgPid
+while ($true) {
+  $ovH = [long]0
+  if ($overlayPid -gt 0) { $ovH = [OwnerBind]::FindBiggestVisible([uint32]$overlayPid) }
+  if ($ovH -eq 0) {
+    # 悬浮窗窗口暂时不可见(可能刚重启未显示或已退出):刷新 pid 后小睡重试
+    $newPid = Get-CfgPid
+    if ($newPid -ne $overlayPid) { $overlayPid = $newPid }
+    $ovProc = Get-Process -Id $overlayPid -ErrorAction SilentlyContinue
+    if (-not $ovProc) { break }  # 悬浮窗进程没了,守护结束
+    Start-Sleep -Milliseconds 500
+    continue
+  }
   $owner = [OwnerBind]::GetWindowLongPtr([IntPtr]$ovH, -8)
-  Write-Output ("bound: overlay=0x" + $ovH.ToString("X") + " owner=0x" + $owner.ToString("X") + " expect=0x" + $zc.MainWindowHandle.ToInt64().ToString("X"))
-} else {
-  Write-Output ("bind failed: overlay=0x" + $ovH.ToString("X") + " zcode=" + ($null -ne $zc))
+  $zc = Get-Process ZCode -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if ($owner -eq [IntPtr]::Zero -and $zc) {
+    [OwnerBind]::SetWindowLongPtr([IntPtr]$ovH, -8, $zc.MainWindowHandle) | Out-Null
+  }
+  Start-Sleep -Milliseconds 2000
 }
