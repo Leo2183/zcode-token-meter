@@ -31,6 +31,7 @@ public class Docking {
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
   [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr h, ref MONITORINFO mi);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
   public delegate void WinEventProc(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
   public struct R { public int L, T, Rt, B; }
   [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public R rcMonitor; public R rcWork; public int dwFlags; }
@@ -47,12 +48,14 @@ public class Docking {
   static bool hiddenByUs = false;
 
   static R Rect(IntPtr h) { var r = new R(); GetWindowRect(h, out r); return r; }
+  static bool NotCloaked(IntPtr h) { int c; try { DwmGetWindowAttribute(h, 14 /*DWMWA_CLOAKED*/, out c, 4); return c == 0; } catch { return true; } }
+
 
   public static long FindBiggestVisible(uint pid) {
     long best = 0; int ba = 0;
     _findCb = (h, l) => {
       uint w; GetWindowThreadProcessId(h, out w);
-      if (w == pid && IsWindowVisible(h)) {
+      if (w == pid && IsWindowVisible(h) && NotCloaked(h)) {
         var r = new R(); GetWindowRect(h, out r);
         int a = (r.Rt - r.L) * (r.B - r.T);
         if (a > ba) { ba = a; best = h.ToInt64(); }
@@ -83,7 +86,7 @@ public class Docking {
     _cand = new System.Collections.Generic.List<long>();
     _findCb = (h, l) => {
       uint w; GetWindowThreadProcessId(h, out w);
-      if (pids.Contains(w) && IsWindowVisible(h)) _cand.Add(h.ToInt64());
+      if (pids.Contains(w) && IsWindowVisible(h) && NotCloaked(h)) _cand.Add(h.ToInt64());
       return true;
     };
     EnumWindows(_findCb, IntPtr.Zero);
@@ -114,28 +117,35 @@ public class Docking {
     if (hwnd == zc && offsetReady) ApplyOffset(); // ZCode activated: re-insert above it
   }
 
-  // position the overlay at (zc + offset) and directly above zc in z-order
+  // position the overlay at (zc + offset), clamped INSIDE the ZCode window rect
+  // (6px margin) so it behaves like a panel of the app; fall back to the monitor
+  // work area when the window is smaller than the overlay. z-order untouched -
+  // the window is topmost and visibility is governed by ShouldShow().
   public static void ApplyOffset() {
     var z = Rect(zc);
     if (z.Rt <= z.L) return;
+    var o = Rect(ov);
+    int ow = o.Rt - o.L, oh = o.B - o.T;
     int tx = z.L + dx, ty = z.T + dy;
-    IntPtr mon = MonitorFromWindow(zc, 2);
-    var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
-    if (GetMonitorInfo(mon, ref mi)) {
-      var o = Rect(ov); int ow = o.Rt - o.L, oh = o.B - o.T;
-      if (tx < mi.rcWork.L) tx = mi.rcWork.L;
-      if (ty < mi.rcWork.T) ty = mi.rcWork.T;
-      if (tx + ow > mi.rcWork.Rt) tx = mi.rcWork.Rt - ow;
-      if (ty + oh > mi.rcWork.B) ty = mi.rcWork.B - oh;
+    if (z.Rt - z.L > ow + 12 && z.B - z.T > oh + 12) {
+      if (tx < z.L + 6) tx = z.L + 6;
+      if (ty < z.T + 6) ty = z.T + 6;
+      if (tx + ow > z.Rt - 6) tx = z.Rt - 6 - ow;
+      if (ty + oh > z.B - 6) ty = z.B - 6 - oh;
+    } else {
+      IntPtr mon = MonitorFromWindow(zc, 2);
+      var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+      if (GetMonitorInfo(mon, ref mi)) {
+        if (tx < mi.rcWork.L) tx = mi.rcWork.L;
+        if (ty < mi.rcWork.T) ty = mi.rcWork.T;
+        if (tx + ow > mi.rcWork.Rt) tx = mi.rcWork.Rt - ow;
+        if (ty + oh > mi.rcWork.B) ty = mi.rcWork.B - oh;
+      }
     }
     var cur = Rect(ov);
     if (Math.Abs(cur.L - tx) >= 1 || Math.Abs(cur.T - ty) >= 1) {
       lastSelfMoveTick = Environment.TickCount;
-      SetWindowPos(ov, zc, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/);
-    } else {
-      // same position: still re-assert z-order above ZCode
-      lastSelfMoveTick = Environment.TickCount;
-      SetWindowPos(ov, zc, 0, 0, 0, 0, 0x0001 | 0x0010 | 0x0002 /*SWP_NOMOVE*/);
+      SetWindowPos(ov, IntPtr.Zero, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/ | 0x0004 /*SWP_NOZORDER*/);
     }
   }
 
@@ -158,13 +168,27 @@ public class Docking {
     ApplyOffset();
   }
 
-  // hide while ZCode is minimized, restore otherwise
-  public static void SyncMinimize() {
+  // visibility: hide while ZCode is minimized or occluded by the foreground
+  // window on the same screen (foreground on another screen = no occlusion)
+  public static bool ShouldShow() {
+    if (IsIconic(zc)) return false;
+    IntPtr fg = GetForegroundWindow();
+    if (fg == zc || fg == ov || fg == IntPtr.Zero) return true;
+    uint fgPid = 0; GetWindowThreadProcessId(fg, out fgPid);
+    // ignore foreground windows belonging to our own overlay process
+    uint ovPid = 0; GetWindowThreadProcessId(ov, out ovPid);
+    if (fgPid == ovPid) return true;
+    if (MonitorFromWindow(fg, 2) != MonitorFromWindow(zc, 2)) return true; // other screen
+    var f = Rect(fg); var z = Rect(zc);
+    bool intersect = (f.L < z.Rt) && (z.L < f.Rt) && (f.T < z.B) && (z.T < f.B);
+    return !intersect;
+  }
+  public static void SyncVisibility() {
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
-    bool iconic = IsIconic(zc);
-    bool ovVis = IsWindowVisible(ov);
-    if (iconic && ovVis) { ShowWindow(ov, 0 /*SW_HIDE*/); hiddenByUs = true; }
-    else if (!iconic && !ovVis && hiddenByUs) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); hiddenByUs = false; ApplyOffset(); }
+    bool want = ShouldShow();
+    bool vis = IsWindowVisible(ov);
+    if (!want && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); hiddenByUs = true; }
+    else if (want && !vis && hiddenByUs) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); hiddenByUs = false; ApplyOffset(); }
   }
 
   public static void Pump(int ms) {
@@ -187,6 +211,6 @@ while ($true) {
   }
   $zcH = [Docking]::FindZcodeMain()
   if ($zcH -ne 0) { [Docking]::Ensure([IntPtr]$zcH, [IntPtr]$ovH) }
-  [Docking]::SyncMinimize()
-  [Docking]::Pump(2000)
+  [Docking]::SyncVisibility()
+  [Docking]::Pump(400)
 }

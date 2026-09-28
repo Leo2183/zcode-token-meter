@@ -128,8 +128,7 @@ function start() {
       nodeIntegration: false,
     },
   });
-  // 绑定为 owned window 时不能置顶(owner 关系负责层级);仅退回独立模式时置顶
-  if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
+  win.setAlwaysOnTop(true, 'screen-saver'); // 层级:置顶;可见性由 owner.ps1 按遮挡判定
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示
