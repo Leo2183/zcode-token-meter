@@ -188,7 +188,7 @@ public class Docking {
     bool want = ShouldShow();
     bool vis = IsWindowVisible(ov);
     if (!want && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); hiddenByUs = true; }
-    else if (want && !vis && hiddenByUs) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); hiddenByUs = false; ApplyOffset(); }
+    else if (want && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); hiddenByUs = false; ApplyOffset(); } // 不依赖 hiddenByUs:藏窗的守护可能已死,状态会成孤儿
   }
 
   public static void Pump(int ms) {
