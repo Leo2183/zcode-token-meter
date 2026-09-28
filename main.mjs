@@ -287,7 +287,7 @@ function start() {
       // owner.ps1 自读配置文件里的 pid,无需传参(注意:该文件带 UTF-8 BOM,PS5.1 才能正确解析中文注释)
       const ps = spawn('powershell', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(HERE, 'owner.ps1'), '-OverlayPid', String(process.pid),
+        '-File', path.join(HERE, 'owner.ps1'), '-OverlayDir', HERE,
       ], { stdio: ['ignore', 'ignore', 'ignore'] });
       win.on('closed', () => ps.kill());
     } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }

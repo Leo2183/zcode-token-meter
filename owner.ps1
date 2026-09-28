@@ -9,8 +9,8 @@
 #   * The 2s loop re-finds both windows (handles change when ZCode recreates its
 #     window), re-arms hooks, hides the overlay while ZCode is minimized.
 # Exits when the overlay process is gone. ASCII-only file (PS 5.1 / BOM reason).
-param([int]$OverlayPid = 0)
-if ($OverlayPid -le 0) { exit 1 }
+param([string]$OverlayDir = "D:\workspace\zcode-token-meter")
+if (-not (Test-Path $OverlayDir)) { exit 1 }
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -45,25 +45,39 @@ public class Docking {
   public static int dx = 0, dy = 0;
   static bool offsetReady = false;
   static int lastSelfMoveTick = 0;
-  static bool hiddenByUs = false;
 
   static R Rect(IntPtr h) { var r = new R(); GetWindowRect(h, out r); return r; }
   static bool NotCloaked(IntPtr h) { int c; try { DwmGetWindowAttribute(h, 14 /*DWMWA_CLOAKED*/, out c, 4); return c == 0; } catch { return true; } }
 
 
-  public static long FindBiggestVisible(uint pid) {
-    long best = 0; int ba = 0;
+  static System.Collections.Generic.HashSet<uint> _pids;
+  static int _wantW, _wantH; static long _matchVis, _matchAny, _fallback;
+  // The overlay card is the window whose size matches the config (w x h, +/-40%).
+  // Do NOT require visibility - after we hide it, a visibility-filtered search
+  // finds nothing and the daemon deadlocks with the window stuck hidden.
+  // The size match also rejects Electron's hidden helper windows (e.g. 1440x753).
+  public static long FindOverlayWindow(uint[] pids, int wantW, int wantH) {
+    _pids = new System.Collections.Generic.HashSet<uint>(pids);
+    _wantW = wantW; _wantH = wantH; _matchVis = 0; _matchAny = 0; _fallback = 0;
     _findCb = (h, l) => {
       uint w; GetWindowThreadProcessId(h, out w);
-      if (w == pid && IsWindowVisible(h) && NotCloaked(h)) {
+      if (_pids.Contains(w) && NotCloaked(h)) {
         var r = new R(); GetWindowRect(h, out r);
-        int a = (r.Rt - r.L) * (r.B - r.T);
-        if (a > ba) { ba = a; best = h.ToInt64(); }
+        int ww = r.Rt - r.L, hh = r.B - r.T;
+        if (ww < 80 || ww > 500 || hh < 30 || hh > 600) return true; // card/capsule range only
+        bool sizeOk = Math.Abs(ww - _wantW) <= _wantW * 0.4 && Math.Abs(hh - _wantH) <= _wantH * 0.4;
+        if (sizeOk) {
+          if (IsWindowVisible(h)) { if (_matchVis == 0) _matchVis = h.ToInt64(); }
+          else if (_matchAny == 0) _matchAny = h.ToInt64();
+        }
+        if (IsWindowVisible(h) && ww >= 150) { var a = ww * hh; /* fallback: first visible decent window */ if (_fallback == 0) _fallback = h.ToInt64(); }
       }
       return true;
     };
     EnumWindows(_findCb, IntPtr.Zero);
-    return best;
+    if (_matchVis != 0) return _matchVis;
+    if (_matchAny != 0) return _matchAny;
+    return _fallback;
   }
 
   // .NET MainWindowHandle goes stale after ZCode recreates its window; find the
@@ -187,8 +201,8 @@ public class Docking {
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
     bool want = ShouldShow();
     bool vis = IsWindowVisible(ov);
-    if (!want && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); hiddenByUs = true; }
-    else if (want && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); hiddenByUs = false; ApplyOffset(); } // 不依赖 hiddenByUs:藏窗的守护可能已死,状态会成孤儿
+    if (!want && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); }
+    else if (want && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); ApplyOffset(); }
   }
 
   public static void Pump(int ms) {
@@ -202,10 +216,16 @@ public class Docking {
 }
 "@
 while ($true) {
-  $ovH = [Docking]::FindBiggestVisible([uint32]$OverlayPid)
+  # Match ALL electron processes whose exe lives under the overlay dir (main +
+  # children); a single pid is unreliable - child processes stay alive with no
+  # windows and leave the daemon idling on the wrong pid.
+  $ovPids = @(Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -like "$OverlayDir*" } | Select-Object -ExpandProperty ProcessId)
+  if ($ovPids.Count -eq 0) { break }  # overlay app fully closed, daemon exits
+  $cfgW = 260; $cfgH = 194
+  try { $c = Get-Content "$env:USERPROFILE\.zcode\zcode-token-meter.json" -Raw | ConvertFrom-Json; if ($c.w) { $cfgW = [int]$c.w }; if ($c.h) { $cfgH = [int]$c.h } } catch {}
+  $ovH = [Docking]::FindOverlayWindow([uint32[]]$ovPids, $cfgW, $cfgH)
   if ($ovH -eq 0) {
-    $ovProc = Get-Process -Id $OverlayPid -ErrorAction SilentlyContinue
-    if (-not $ovProc) { break }  # overlay gone, daemon exits
     Start-Sleep -Milliseconds 400
     continue
   }
