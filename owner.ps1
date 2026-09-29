@@ -23,6 +23,7 @@ public class Docking {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
@@ -108,8 +109,12 @@ public class Docking {
     foreach (var hv in _cand) {
       var h = (IntPtr)hv;
       if (TitleOf(h) != "ZCode") continue;
-      if (h == fg) return hv; // prefer the foreground one
+      // reject the force-update prompt: it is a small MODAL child (has an owner)
+      // of the main window - docking to it hides the overlay or covers its buttons
+      if (GetWindowLongPtr(h, -8) != IntPtr.Zero) continue;
       var r = new R(); GetWindowRect(h, out r);
+      if ((r.Rt - r.L) < 500 || (r.B - r.T) < 400) continue;
+      if (h == fg) return hv; // prefer the foreground one
       int a = (r.Rt - r.L) * (r.B - r.T);
       if (a > ba) { ba = a; best = hv; }
     }
@@ -137,7 +142,7 @@ public class Docking {
   // the window is topmost and visibility is governed by ShouldShow().
   public static void ApplyOffset() {
     var z = Rect(zc);
-    if (z.Rt <= z.L) return;
+    if (z.Rt <= z.L || z.L < -10000) return; // minimized windows sit at -32000: keep last good position
     var o = Rect(ov);
     int ow = o.Rt - o.L, oh = o.B - o.T;
     int tx = z.L + dx, ty = z.T + dy;
@@ -197,6 +202,9 @@ public class Docking {
     bool intersect = (f.L < z.Rt) && (z.L < f.Rt) && (f.T < z.B) && (z.T < f.B);
     return !intersect;
   }
+  public static void HideWhenNoMain(IntPtr ovH) {
+    if (ovH != IntPtr.Zero && IsWindowVisible(ovH)) ShowWindow(ovH, 0);
+  }
   public static void SyncVisibility() {
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
     bool want = ShouldShow();
@@ -230,7 +238,14 @@ while ($true) {
     continue
   }
   $zcH = [Docking]::FindZcodeMain()
-  if ($zcH -ne 0) { [Docking]::Ensure([IntPtr]$zcH, [IntPtr]$ovH) }
-  [Docking]::SyncVisibility()
+  if ($zcH -ne 0) {
+    $script:noMain = 0
+    [Docking]::Ensure([IntPtr]$zcH, [IntPtr]$ovH)
+    [Docking]::SyncVisibility()
+  } else {
+    # main window gone (update handoff / tray / close): hide after ~1.2s
+    $script:noMain = 1 + $(if ($script:noMain) { $script:noMain } else { 0 })
+    if ($script:noMain -ge 3) { [Docking]::HideWhenNoMain([IntPtr]$ovH) }
+  }
   [Docking]::Pump(400)
 }
