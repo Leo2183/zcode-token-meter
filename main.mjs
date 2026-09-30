@@ -128,7 +128,9 @@ function start() {
       nodeIntegration: false,
     },
   });
-  win.setAlwaysOnTop(true, 'screen-saver'); // 层级:置顶;可见性由 owner.ps1 按遮挡判定
+  // 层级:停靠模式下紧跟 ZCode 窗口上方(owner.ps1 的 insertAfter),不置顶;
+  // 退回独立模式(ZORDER=0)才用置顶
+  if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示

@@ -133,7 +133,7 @@ public class Docking {
   }
 
   static void OnFg(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time) {
-    if (hwnd == zc && offsetReady) ApplyOffset(); // ZCode activated: re-insert above it
+    if (hwnd == zc && offsetReady) { ApplyOffset(); AssertAbove(); }
   }
 
   // position the overlay at (zc + offset), clamped INSIDE the ZCode window rect
@@ -164,8 +164,19 @@ public class Docking {
     var cur = Rect(ov);
     if (Math.Abs(cur.L - tx) >= 1 || Math.Abs(cur.T - ty) >= 1) {
       lastSelfMoveTick = Environment.TickCount;
-      SetWindowPos(ov, IntPtr.Zero, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/ | 0x0004 /*SWP_NOZORDER*/);
+      SetWindowPos(ov, zc, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/);
+    } else {
+      AssertAbove();
     }
+  }
+
+  // keep the overlay DIRECTLY above ZCode in z-order so covering windows cover
+  // both naturally; re-asserted on events and each loop (<=400ms) because Windows
+  // re-raises ZCode after e.g. maximizing, which would otherwise bury the overlay
+  public static void AssertAbove() {
+    if (ov == IntPtr.Zero || zc == IntPtr.Zero) return;
+    lastSelfMoveTick = Environment.TickCount;
+    SetWindowPos(ov, zc, 0, 0, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/ | 0x0010 /*SWP_NOACTIVATE*/);
   }
 
   public static void Ensure(IntPtr zcH, IntPtr ovH) {
@@ -187,30 +198,19 @@ public class Docking {
     ApplyOffset();
   }
 
-  // visibility: hide while ZCode is minimized or occluded by the foreground
-  // window on the same screen (foreground on another screen = no occlusion)
-  public static bool ShouldShow() {
-    if (IsIconic(zc)) return false;
-    IntPtr fg = GetForegroundWindow();
-    if (fg == zc || fg == ov || fg == IntPtr.Zero) return true;
-    uint fgPid = 0; GetWindowThreadProcessId(fg, out fgPid);
-    // ignore foreground windows belonging to our own overlay process
-    uint ovPid = 0; GetWindowThreadProcessId(ov, out ovPid);
-    if (fgPid == ovPid) return true;
-    if (MonitorFromWindow(fg, 2) != MonitorFromWindow(zc, 2)) return true; // other screen
-    var f = Rect(fg); var z = Rect(zc);
-    bool intersect = (f.L < z.Rt) && (z.L < f.Rt) && (f.T < z.B) && (z.T < f.B);
-    return !intersect;
-  }
   public static void HideWhenNoMain(IntPtr ovH) {
     if (ovH != IntPtr.Zero && IsWindowVisible(ovH)) ShowWindow(ovH, 0);
   }
+  // visibility: the ONLY hide rules are minimize and "main window gone";
+  // occlusion is handled natively by z-order (AssertAbove) - covering windows
+  // cover the overlay together with ZCode, no foreground detection needed
   public static void SyncVisibility() {
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
-    bool want = ShouldShow();
+    bool iconic = IsIconic(zc);
     bool vis = IsWindowVisible(ov);
-    if (!want && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); }
-    else if (want && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); ApplyOffset(); }
+    if (iconic && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); }
+    else if (!iconic && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); ApplyOffset(); } // restore regardless of which path hid it (minimize / no-main)
+    if (!iconic && vis) AssertAbove();
   }
 
   public static void Pump(int ms) {
