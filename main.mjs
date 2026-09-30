@@ -15,6 +15,7 @@ import { collectSnapshot, defaultDbPath, listSessions } from './meter.mjs';
 import { statSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(homedir(), '.zcode', 'zcode-token-meter.json');
 const POLL_MS = Math.max(500, Number(process.env.ZCODE_TOKEN_METER_OVERLAY_POLL_MS) || 2000);
@@ -128,9 +129,10 @@ function start() {
       nodeIntegration: false,
     },
   });
-  // 层级:停靠模式下紧跟 ZCode 窗口上方(owner.ps1 的 insertAfter),不置顶;
-  // 退回独立模式(ZORDER=0)才用置顶
-  if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
+  // 透明窗出生时必须置顶:若出生即被全屏前台盖住,Chromium 判遮挡后首帧都不绘
+  // (配合 disable-features=CalculateNativeWinOcclusion);owner.ps1 的 insertAfter
+  // 会随即把它降入正常层级、紧跟 ZCode 上方
+  win.setAlwaysOnTop(true, 'screen-saver');
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示

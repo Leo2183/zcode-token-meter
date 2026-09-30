@@ -164,7 +164,7 @@ public class Docking {
     var cur = Rect(ov);
     if (Math.Abs(cur.L - tx) >= 1 || Math.Abs(cur.T - ty) >= 1) {
       lastSelfMoveTick = Environment.TickCount;
-      SetWindowPos(ov, zc, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/);
+      SetWindowPos(ov, IntPtr.Zero, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/);
     } else {
       AssertAbove();
     }
@@ -175,8 +175,15 @@ public class Docking {
   // re-raises ZCode after e.g. maximizing, which would otherwise bury the overlay
   public static void AssertAbove() {
     if (ov == IntPtr.Zero || zc == IntPtr.Zero) return;
+    // HWND_TOP (IntPtr.Zero as insertAfter) instead of zc: an invisible full-screen
+    // window (e.g. OP.GG electron) sits directly above ZCode and swallows anything
+    // inserted there - our transparent card renders nothing in that slot.
+    // Band-top keeps us below real topmost windows (taskbar etc.).
     lastSelfMoveTick = Environment.TickCount;
-    SetWindowPos(ov, zc, 0, 0, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/ | 0x0010 /*SWP_NOACTIVATE*/);
+    SetWindowPos(ov, IntPtr.Zero, 0, 0, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/ | 0x0010 /*SWP_NOACTIVATE*/);
+  }
+  public static bool ZcIsForeground() {
+    return zc != IntPtr.Zero && GetForegroundWindow() == zc;
   }
 
   public static void Ensure(IntPtr zcH, IntPtr ovH) {
@@ -210,7 +217,7 @@ public class Docking {
     bool vis = IsWindowVisible(ov);
     if (iconic && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); }
     else if (!iconic && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); ApplyOffset(); } // restore regardless of which path hid it (minimize / no-main)
-    if (!iconic && vis) AssertAbove();
+    if (!iconic && vis && ZcIsForeground()) AssertAbove();
   }
 
   public static void Pump(int ms) {
