@@ -129,10 +129,9 @@ function start() {
       nodeIntegration: false,
     },
   });
-  // 透明窗出生时必须置顶:若出生即被全屏前台盖住,Chromium 判遮挡后首帧都不绘
-  // (配合 disable-features=CalculateNativeWinOcclusion);owner.ps1 的 insertAfter
-  // 会随即把它降入正常层级、紧跟 ZCode 上方
-  win.setAlwaysOnTop(true, 'screen-saver');
+  // 不置顶:owner.ps1 用 HWND_NOTOPMOST 维持"正常带顶端"(低于任务栏等真置顶层)。
+  // 置顶会导致悬浮窗永远不被其他窗口遮挡;ZORDER=0 独立模式才用置顶。
+  if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示

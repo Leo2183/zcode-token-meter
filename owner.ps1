@@ -24,6 +24,7 @@ public class Docking {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
+  [DllImport("user32.dll")] public static extern IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
@@ -133,7 +134,7 @@ public class Docking {
   }
 
   static void OnFg(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time) {
-    if (hwnd == zc && offsetReady) { ApplyOffset(); AssertAbove(); }
+    if (hwnd == zc && offsetReady) ApplyOffset(); // owned: z-order is native
   }
 
   // position the overlay at (zc + offset), clamped INSIDE the ZCode window rect
@@ -164,27 +165,10 @@ public class Docking {
     var cur = Rect(ov);
     if (Math.Abs(cur.L - tx) >= 1 || Math.Abs(cur.T - ty) >= 1) {
       lastSelfMoveTick = Environment.TickCount;
-      SetWindowPos(ov, IntPtr.Zero, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0010 /*SWP_NOACTIVATE*/);
-    } else {
-      AssertAbove();
+      SetWindowPos(ov, IntPtr.Zero, tx, ty, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
     }
   }
 
-  // keep the overlay DIRECTLY above ZCode in z-order so covering windows cover
-  // both naturally; re-asserted on events and each loop (<=400ms) because Windows
-  // re-raises ZCode after e.g. maximizing, which would otherwise bury the overlay
-  public static void AssertAbove() {
-    if (ov == IntPtr.Zero || zc == IntPtr.Zero) return;
-    // HWND_TOP (IntPtr.Zero as insertAfter) instead of zc: an invisible full-screen
-    // window (e.g. OP.GG electron) sits directly above ZCode and swallows anything
-    // inserted there - our transparent card renders nothing in that slot.
-    // Band-top keeps us below real topmost windows (taskbar etc.).
-    lastSelfMoveTick = Environment.TickCount;
-    SetWindowPos(ov, IntPtr.Zero, 0, 0, 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/ | 0x0010 /*SWP_NOACTIVATE*/);
-  }
-  public static bool ZcIsForeground() {
-    return zc != IntPtr.Zero && GetForegroundWindow() == zc;
-  }
 
   public static void Ensure(IntPtr zcH, IntPtr ovH) {
     if (zcH == zc && ovH == ov && hLoc != IntPtr.Zero) return;
@@ -192,6 +176,10 @@ public class Docking {
     if (hFg != IntPtr.Zero) { UnhookWinEvent(hFg); hFg = IntPtr.Zero; }
     zc = zcH; ov = ovH;
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
+    // owned window: native "always above owner, covered together, minimize
+    // hides" - no z-order war. Rebind whenever the link broke (ZCode window
+    // recreation), which also self-heals after ZCode restarts.
+    if (GetWindowLongPtr(ov, -8) != zc) SetWindowLongPtr(ov, -8, zc);
     if (!offsetReady) {
       var z = Rect(zc); var o = Rect(ov);
       if (z.Rt > z.L && o.Rt > o.L) { dx = o.L - z.L; dy = o.T - z.T; offsetReady = true; ApplyOffset(); }
@@ -209,7 +197,7 @@ public class Docking {
     if (ovH != IntPtr.Zero && IsWindowVisible(ovH)) ShowWindow(ovH, 0);
   }
   // visibility: the ONLY hide rules are minimize and "main window gone";
-  // occlusion is handled natively by z-order (AssertAbove) - covering windows
+  // occlusion handled natively by the owned-window link - covering windows
   // cover the overlay together with ZCode, no foreground detection needed
   public static void SyncVisibility() {
     if (zc == IntPtr.Zero || ov == IntPtr.Zero) return;
@@ -217,7 +205,6 @@ public class Docking {
     bool vis = IsWindowVisible(ov);
     if (iconic && vis) { ShowWindow(ov, 0 /*SW_HIDE*/); }
     else if (!iconic && !vis) { ShowWindow(ov, 4 /*SW_SHOWNOACTIVATE*/); ApplyOffset(); } // restore regardless of which path hid it (minimize / no-main)
-    if (!iconic && vis && ZcIsForeground()) AssertAbove();
   }
 
   public static void Pump(int ms) {
