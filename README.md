@@ -51,6 +51,7 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 | `renderer.html` | 卡片 UI（指标、胶囊态、柱状图与悬停 tooltip） |
 | `preload.cjs` | contextBridge，只暴露收快照与退出 |
 | `plugin/overlay-launch.mjs` + `plugin/hooks.json` | 插件桥接件：会话开始时拉起悬浮窗（复制进任意 ZCode 插件的 hooks/ 即用） |
+| `.github/workflows/ci.yml` | CI：node --check 语法检查 + meter.mjs 无库冒烟测试 |
 
 ## 环境变量（与 token-meter 插件一致）
 
