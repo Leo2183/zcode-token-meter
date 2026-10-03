@@ -4,7 +4,7 @@
 // 并夹回工作区内。字号(存于 ~/.zcode/zcode-token-meter.json 的 scale)支持右键菜单与渲染层上报。
 // 跟随 ZCode:pid 写入配置供插件 hook 幂等拉起;每 5s 探测 ZCode.exe,连续两次不在则退出。
 
-import { app, BrowserWindow, screen, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, screen, ipcMain, Menu, utilityProcess } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
@@ -240,6 +240,28 @@ function start() {
     ]).popup({ window: win });
   });
 
+  // 数据采集隔离:同步 SQLite 查询放 utilityProcess,主进程只转发;
+  // 工作进程崩溃则回退主进程内联查询(功能不死),崩溃两次后不再重启避免循环
+  let worker = null, workerCrashes = 0;
+  function spawnWorker() {
+    if (workerCrashes >= 2) return;
+    try {
+      worker = utilityProcess.fork(path.join(HERE, 'meter-worker.mjs'));
+      worker.on('message', (m) => {
+        if (m && m.type === 'snapshot' && !win.isDestroyed()) {
+          win.webContents.send('snapshot', m.snapshot);
+        }
+      });
+      worker.on('exit', () => {
+        worker = null;
+        workerCrashes += 1;
+        spawnWorker();
+      });
+    } catch { worker = null; }
+  }
+  spawnWorker();
+  win.on('closed', () => { if (worker) worker.kill(); });
+
   // 自适应轮询:可见时每 tick 先 stat db 文件,mtime 变了才发快照;
   // 窗口被 z 序跟随隐藏时暂停;持续无变化超过 IDLE_AFTER 降频到 POLL_MS*SLOW_MULT。
   // force=true 绕过 mtime 闸门立即重查——切换/固定会话、恢复显示时必须用:
@@ -255,7 +277,11 @@ function start() {
         lastChangeAt = Date.now();
         try {
           const { pinSid } = loadConfig();
-          win.webContents.send('snapshot', collectSnapshot(defaultDbPath(), { pinSid }));
+          if (worker) {
+            worker.postMessage({ type: 'collect', pinSid });
+          } else {
+            win.webContents.send('snapshot', collectSnapshot(defaultDbPath(), { pinSid }));
+          }
         } catch { /* 窗口销毁竞态 */ }
       }
     }
