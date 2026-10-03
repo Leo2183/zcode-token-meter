@@ -7,8 +7,8 @@
 import { app, BrowserWindow, screen, ipcMain, Menu, utilityProcess } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectSnapshot, defaultDbPath, listSessions } from './meter.mjs';
@@ -317,13 +317,16 @@ function start() {
       // 由本进程下次启动时重新拉起——避免搜索兜底复活多代僵尸守护
       const buf = win.getNativeWindowHandle();
       const hwnd = process.arch === 'x64' ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0));
+      // stderr 落盘:守护曾因编码/编译错误静默死亡,排查全靠盲猜
+      // (GBK、param 位置、重复声明三次事故都栽在 stdio ignore 上)
+      const errFd = openSync(path.join(tmpdir(), 'ztm-owner.err.log'), 'a');
       const ps = spawn('powershell', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', path.join(HERE, 'owner.ps1'), '-OverlayDir', HERE,
         '-OverlayHwnd', String(hwnd),
         '-OverlayPid', String(process.pid),
         '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
-      ], { stdio: ['ignore', 'ignore', 'ignore'] });
+      ], { stdio: ['ignore', 'ignore', errFd] });
       win.on('closed', () => ps.kill());
     } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }
   }
