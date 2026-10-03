@@ -337,7 +337,8 @@
       let drawn = 0;
       out += '<g data-idx="' + i + '">';
       LAYERS.forEach((l, j) => {
-        const h = Math.round(shares[j] / (sSum || 1) * barH);
+        // 最后一段吃掉取整余量,保证三层之和恰为 barH(否则柱底有 1-2px 缝)
+        const h = j === LAYERS.length - 1 ? (y - (H - PAD - barH)) : Math.round(shares[j] / (sSum || 1) * barH);
         if (h >= 1) { y -= h; drawn += h; out += '<rect x="' + x.toFixed(1) + '" y="' + y + '" width="' + barW.toFixed(1) + '" height="' + h + '" fill="' + l.color + '"/>'; }
       });
       if (!drawn) { y -= 1; out += '<rect x="' + x.toFixed(1) + '" y="' + y + '" width="' + barW.toFixed(1) + '" height="1" fill="' + LAYERS[0].color + '"/>'; } // 有数据但不足 1px 的柱保底

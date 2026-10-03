@@ -238,7 +238,7 @@ public class Docking {
     MSG m;
     while (sw.ElapsedMilliseconds < ms) {
       while (PeekMessage(out m, IntPtr.Zero, 0, 0, 1 /*PM_REMOVE*/)) { }
-      Thread.Sleep(15);
+      Thread.Sleep(40);
     }
   }
 }

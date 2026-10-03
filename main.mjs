@@ -7,12 +7,11 @@
 import { app, BrowserWindow, screen, ipcMain, Menu, utilityProcess } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectSnapshot, defaultDbPath, listSessions } from './meter.mjs';
-import { statSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,7 +72,8 @@ function autoScaleFor(rect) {
 }
 
 // 恢复的位置必须仍落在某块屏幕的工作区内,否则回默认(主屏右上角)
-function resolvePosition(cfg) {  const w = Number.isFinite(cfg.w) ? cfg.w : BASE_W * (cfg.scale || 1);
+function resolvePosition(cfg) {
+  const w = Number.isFinite(cfg.w) ? cfg.w : BASE_W * (cfg.scale || 1);
   const h = Number.isFinite(cfg.h) ? cfg.h : FALLBACK_H;
   if (Number.isFinite(cfg.x) && Number.isFinite(cfg.y)) {
     const rect = { x: cfg.x, y: cfg.y, width: w, height: h };
@@ -146,10 +146,16 @@ function start() {
     win.webContents.send('overlay:init', { scale, autoScale: autoScaleFor(win.getBounds()), capsule: !!cfg.capsule });
   });
 
-  win.on('closed', () => app.quit());
+  // 统一的窗口销毁清理(此前分散在 5 处注册)
+  win.on('closed', () => {
+    app.quit();
+    if (pollTimer) clearTimeout(pollTimer);
+    if (watcher) clearInterval(watcher);
+    if (worker) worker.kill();
+    if (ps) ps.kill();
+  });
   app.on('will-quit', () => saveConfig({ pid: null }));
 
-  // 位置记忆:move 事件高频,防抖 500ms 落盘
   // 位置记忆:move 事件高频,防抖 500ms 落盘;顺带检测换了显示器→重算分辨率自适应系数
   let saveTimer = null;
   let lastWa = screen.getDisplayMatching(win.getBounds()).workArea;
@@ -260,7 +266,6 @@ function start() {
     } catch { worker = null; }
   }
   spawnWorker();
-  win.on('closed', () => { if (worker) worker.kill(); });
 
   // 自适应轮询:可见时每 tick 先 stat db 文件,mtime 变了才发快照;
   // 窗口被 z 序跟随隐藏时暂停;持续无变化超过 IDLE_AFTER 降频到 POLL_MS*SLOW_MULT。
@@ -295,7 +300,6 @@ function start() {
     if (!win.isDestroyed()) pollTick(force);
   }
   pollTick();
-  win.on('closed', () => { if (pollTimer) clearTimeout(pollTimer); });
 
   // 跟随 ZCode 退出:连续两次探测不到 ZCode.exe 才退,抗瞬时抖动
   if (FOLLOW) {
@@ -305,7 +309,6 @@ function start() {
       if (await zcodeAlive()) misses = 0;
       else if (++misses >= 2) app.quit();
     }, WATCH_MS);
-    win.on('closed', () => clearInterval(watcher));
   }
 
   // 绑定为 ZCode 主窗口的 owned window(GWL_HWNDPARENT):最小化/被遮挡/恢复全部由
@@ -327,7 +330,6 @@ function start() {
         '-OverlayPid', String(process.pid),
         '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
       ], { stdio: ['ignore', 'ignore', errFd] });
-      win.on('closed', () => ps.kill());
     } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }
   }
 }

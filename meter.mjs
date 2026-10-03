@@ -20,6 +20,7 @@ const TASKS_INDEX_PATH = path.join(homedir(), '.zcode', 'v2', 'tasks-index.sqlit
 function attachTaskIndex(db) {
   try {
     if (!existsSync(TASKS_INDEX_PATH)) return false;
+    // ATTACH 的库名不支持参数绑定,只能拼接;路径已做反斜杠归一与单引号转义
     db.exec("ATTACH DATABASE '" + TASKS_INDEX_PATH.replaceAll('\\', '/').replaceAll("'", "''") + "' AS ti");
     return true;
   } catch { return false; }
@@ -90,6 +91,7 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
         || null;
     }
     if (!sid) return { ok: true, empty: true };
+    const title = db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title || null;
     const otherActive = active && active.id !== sid
       ? { id: active.id, title: (active.title || active.id.slice(5, 17)).slice(0, 40), agoMs: Date.now() - active.time_updated }
       : null;
@@ -98,8 +100,8 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
       "SELECT turn_id FROM model_usage WHERE session_id=? AND query_source='main_turn' ORDER BY started_at DESC LIMIT 1"
     ).get(sid)?.turn_id;
     if (!lastTurnId) {
-      const t = db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title;
-      return { ok: true, empty: true, session: { id: sid, model: null, title: t || null } }; // 刚切到的新会话尚无请求
+      // 刚切到的新会话尚无请求
+      return { ok: true, empty: true, session: { id: sid, model: null, title } };
     }
     const rows = db.prepare(
       `SELECT id, started_at, duration_ms, time_to_first_token_ms, status,
@@ -134,7 +136,7 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
 
     return {
       ok: true, ts: Date.now(),
-      session: { id: sid, model: last.model_id || null, title: db.prepare('SELECT title FROM session WHERE id=?').get(sid)?.title || null, pinned },
+      session: { id: sid, model: last.model_id || null, title, pinned },
       turn: {
         id: lastTurnId,
         requests: rows.length,
@@ -148,10 +150,6 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
       },
       ctx: { tokens: ctxTokens, limit: ctxLimit(), cacheRate },
       cum: { in: cum.in_t, cache: cum.cache_t, out: cum.out_t, total: cum.in_t + cum.out_t },
-      last: {
-        status: last.status, ttftMs: last.time_to_first_token_ms, tps: rowTps(last),
-        outTokens: last.output_tokens, toolCalls: last.tool_call_count,
-      },
       turns,
       otherActive,
     };
@@ -163,6 +161,7 @@ export function collectSnapshot(dbPath = defaultDbPath(), opts = {}) {
 }
 
 // 直接运行时打印 JSON,便于验证与降级轮询复用
-if (process.argv[1] && process.argv[1].endsWith('meter.mjs')) {
+import { fileURLToPath } from 'node:url';
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   console.log(JSON.stringify(collectSnapshot()));
 }
