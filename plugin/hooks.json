@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/hooks/overlay-launch.mjs\"",
+            "timeoutMs": 5000,
+            "statusMessage": "zcode-token-meter: 确保悬浮窗在跑"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/hooks/overlay-launch.mjs\"",
+            "timeoutMs": 5000,
+            "statusMessage": "zcode-token-meter: 确保悬浮窗在跑"
+          }
+        ]
+      }
+    ]
+  }
+}

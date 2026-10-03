@@ -4,7 +4,7 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 
 ## 跟随 ZCode 启停（默认开启，无需手动启动）
 
-- **启动**：token-meter 插件的 `overlay-launch.mjs` 挂在 SessionStart / UserPromptSubmit 上，发现悬浮窗没在跑（查 `~/.zcode/zcode-token-meter.json` 里的 pid）就 detached 拉起一次，幂等。
+- **启动**：`overlay-launch.mjs` 挂在 SessionStart / UserPromptSubmit 上，发现悬浮窗没在跑（查 `~/.zcode/zcode-token-meter.json` 里的 pid）就 detached 拉起一次，幂等。桥接文件在 [plugin/](plugin/) 目录：把 `overlay-launch.mjs`、`hooks.json` 复制进任意 ZCode 插件的 `hooks/` 目录即可启用（`hooks.json` 里的 `${ZCODE_PLUGIN_ROOT}` 会解析为该插件根）；默认从脚本所在位置向上定位悬浮窗项目根，跨位置安装用 `ZCODE_TOKEN_METER_OVERLAY_DIR` 覆盖。注：对话内自动播报用的 `turn-summary.mjs` 属 token-meter 插件本体，不随本仓库发布（指标口径在 `meter.mjs` 内有注释对照）。
 - **关闭**：悬浮窗每 5s 探测 `ZCode.exe`，连续两次探测不到即自动退出（约 10s 后消失）。
 - **窗口停靠（owner.ps1 常驻守护）**：主进程直接传入悬浮窗 HWND（守护不做窗口搜索，句柄失效即退出重启，稳态零 WMI/零枚举，实测 CPU 0.4% 单核）；
   - **位置跟随**：悬浮窗保持相对 ZCode 主窗口的偏移（WinEvent 实时监听移动/缩放），且始终钳制在 ZCode 窗口矩形内（6px 边距）、完整落在单一显示器上——像应用内嵌面板；手动拖动即更新偏移
@@ -50,7 +50,7 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 | `owner.ps1` | 停靠守护：位置跟随、可见性判定、更新换代保护（纯 ASCII，勿加中文注释——PS 5.1 无 BOM 按 GBK 解析） |
 | `renderer.html` | 卡片 UI（指标、胶囊态、柱状图与悬停 tooltip） |
 | `preload.cjs` | contextBridge，只暴露收快照与退出 |
-| 插件 `hooks/overlay-launch.mjs` + `hooks.json` | 会话开始时拉起悬浮窗 |
+| `plugin/overlay-launch.mjs` + `plugin/hooks.json` | 插件桥接件：会话开始时拉起悬浮窗（复制进任意 ZCode 插件的 hooks/ 即用） |
 
 ## 环境变量（与 token-meter 插件一致）
 
