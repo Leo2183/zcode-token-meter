@@ -6,8 +6,8 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 
 - **启动**：token-meter 插件的 `overlay-launch.mjs` 挂在 SessionStart / UserPromptSubmit 上，发现悬浮窗没在跑（查 `~/.zcode/zcode-token-meter.json` 里的 pid）就 detached 拉起一次，幂等。
 - **关闭**：悬浮窗每 5s 探测 `ZCode.exe`，连续两次探测不到即自动退出（约 10s 后消失）。
-- **窗口停靠（owner.ps1 常驻守护）**：
-  - **位置跟随**：悬浮窗保持相对 ZCode 主窗口的偏移（WinEvent 实时监听移动/缩放），且始终钳制在 ZCode 窗口矩形内（6px 边距）——像应用内嵌面板；手动拖动即更新偏移
+- **窗口停靠（owner.ps1 常驻守护）**：主进程直接传入悬浮窗 HWND（守护不做窗口搜索，句柄失效即退出重启，稳态零 WMI/零枚举，实测 CPU 0.4% 单核）；
+  - **位置跟随**：悬浮窗保持相对 ZCode 主窗口的偏移（WinEvent 实时监听移动/缩放），且始终钳制在 ZCode 窗口矩形内（6px 边距）、完整落在单一显示器上——像应用内嵌面板；手动拖动即更新偏移
   - **层级（owned window）**：悬浮窗绑定为 ZCode 主窗口的 owned window——永远在宿主上方、被其他窗口一起盖住、最小化自动隐藏，全部系统原生语义、零轮询零拉锯；ZCode 重建窗口时守护自动重绑。**注意**：不要用 insertAfter 插到"ZCode 正上方"的槽位——某些隐形全屏窗（如 OP.GG）占据该槽并吞掉插入者的渲染。仅两处主动隐藏：ZCode 最小化、主窗口消失（更新交接等）
   - **更新/换代保护**：ZCode 主窗口消失约 1.2s（更新交接、进托盘、关闭）自动隐藏，回来即恢复；更新器的强制升级弹窗（模态小窗）不会被误认为主窗口（按 owner 关系 + 尺寸双重过滤），悬浮窗也不会盖在更新按钮上
   - 层级为置顶窗；开关：`ZCODE_TOKEN_METER_OVERLAY_ZORDER=0`（退回独立置顶、无停靠）。已知边界：ZCode 在前台但停留在非对话页面（设置等）时仍会显示——页面路由从进程外部不可探测（窗口标题/菜单恒定、UIA 树未启用），如需精确可给 ZCode 加 `--remote-debugging-port` 走 CDP
@@ -45,7 +45,8 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 | 文件 | 作用 |
 |---|---|
 | `meter.mjs` | 数据层，纯 Node 可独立运行：`node meter.mjs` 输出 JSON 快照 |
-| `main.mjs` | Electron 主进程：窗口、mtime 闸门轮询、字号/胶囊/固定会话持久化、ZCode 存活检测 |
+| `main.mjs` | Electron 主进程：窗口、mtime 闸门轮询（转发）、字号/胶囊/固定会话持久化、ZCode 存活检测、向守护直传 HWND |
+| `meter-worker.mjs` | utilityProcess 工作进程：同步 SQLite 查询在此执行，不阻塞主进程 UI 线程 |
 | `owner.ps1` | 停靠守护：位置跟随、可见性判定、更新换代保护（纯 ASCII，勿加中文注释——PS 5.1 无 BOM 按 GBK 解析） |
 | `renderer.html` | 卡片 UI（指标、胶囊态、柱状图与悬停 tooltip） |
 | `preload.cjs` | contextBridge，只暴露收快照与退出 |
@@ -56,8 +57,8 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 - `ZCODE_METER_DB`：覆盖 db.sqlite 路径
 - `ZCODE_TOKEN_METER_CTX_LIMIT`：覆盖上下文总量（默认 1000000）
 - `ZCODE_TOKEN_METER_OVERLAY_POLL_MS`：数据轮询间隔（默认 2000，下限 500）
-- `ZCODE_TOKEN_METER_OVERLAY_DIR`：悬浮窗项目目录（hook 拉起用，默认 `D:/workspace/zcode-token-meter`）
-- `ZCODE_TOKEN_METER_OVERLAY_PROC`：存活检测的进程名（默认 `ZCode.exe`）
+- `ZCODE_TOKEN_METER_OVERLAY_DIR`：悬浮窗项目目录（hook 拉起用，默认为脚本自身所在目录）
+- `ZCODE_TOKEN_METER_OVERLAY_PROC`：ZCode 进程名（默认 `ZCode.exe`，同时作用于存活检测与停靠守护）
 
 ## 已踩的坑
 
@@ -66,4 +67,6 @@ ZCode 的 token 用量置顶悬浮窗：按可调速率（默认 2s）只读轮�
 - PowerShell 5.1 把无 BOM 的 UTF-8 按 GBK 解析：含中文的 .ps1 必须带 BOM 或纯 ASCII，否则 here-string 被腐蚀、Add-Type 静默失败。
 - Win32 枚举回调里禁止调 `GetWindowText`（对垂死窗口挂起并中断整个枚举），读标题用 `SendMessageTimeout(WM_GETTEXT)`；枚举/事件委托必须钉在静态字段防 GC。
 - ZCode 有全尺寸的 DWM cloaked 窗口（`IsWindowVisible=true` 但不显示），按"最大可见窗口"查找必被劫持，须按 `DWMWA_CLOAKED` 过滤。
-- Electron 子进程比主进程窗口活得久，按单 pid 找窗口会空转；按"可执行文件路径在项目目录下"圈定进程、按配置尺寸匹配窗口（不以可见为条件，否则隐藏后死锁）。
+- Electron 子进程比主进程窗口活得久，按单 pid 找窗口会空转；主进程应直传 HWND（守护搜索窗口有认错+僵尸双风险，仅保留为手动运行兜底）。
+- 透明 Electron 窗口**跨显示器边界**（混合 DPI 多屏）会停止呈现——窗口"可见"但零像素；停靠钳制必须保证卡片完整落在单一显示器内。
+- 渲染层链路探针必须配合重启使用：尺寸自纠只在"变化"时上报，不重启的探针恒为假阴性（曾因此误判 worker 链路断裂）。
