@@ -287,10 +287,16 @@ function start() {
   // ZORDER=0 退回旧的常置顶行为。
   if (ZORDER) {
     try {
-      // owner.ps1 自读配置文件里的 pid,无需传参(注意:该文件带 UTF-8 BOM,PS5.1 才能正确解析中文注释)
+      // 直传 HWND/pid:守护不做任何搜索(尺寸启发式/每轮 WMI 都去掉),句柄失效即退出,
+      // 由本进程下次启动时重新拉起——避免搜索兜底复活多代僵尸守护
+      const buf = win.getNativeWindowHandle();
+      const hwnd = process.arch === 'x64' ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0));
       const ps = spawn('powershell', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', path.join(HERE, 'owner.ps1'), '-OverlayDir', HERE,
+        '-OverlayHwnd', String(hwnd),
+        '-OverlayPid', String(process.pid),
+        '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
       ], { stdio: ['ignore', 'ignore', 'ignore'] });
       win.on('closed', () => ps.kill());
     } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }

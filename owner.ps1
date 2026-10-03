@@ -1,5 +1,7 @@
 # owner.ps1 - dock the overlay to ZCode's main window (daemon)
-# Strategy (no GWL_HWNDPARENT - it fails silently when ZCode recreates windows):
+# Strategy: GWL_HWNDPARENT owned binding for native z-order semantics, plus
+# WinEvent hooks for position docking. Ownership alone fails silently when
+# ZCode recreates its window - hence the daemon re-binds the link every loop.
 #   * WinEvent hooks: EVENT_OBJECT_LOCATIONCHANGE on the ZCode window (move/resize
 #     follow) and on the overlay (user drag updates the relative offset);
 #     EVENT_SYSTEM_FOREGROUND re-inserts the overlay right above ZCode whenever
@@ -9,7 +11,13 @@
 #   * The 2s loop re-finds both windows (handles change when ZCode recreates its
 #     window), re-arms hooks, hides the overlay while ZCode is minimized.
 # Exits when the overlay process is gone. ASCII-only file (PS 5.1 / BOM reason).
-param([string]$OverlayDir = "D:\workspace\zcode-token-meter")
+param(
+  [string]$OverlayDir = "",
+  [long]$OverlayHwnd = 0,
+  [int]$OverlayPid = 0,
+  [string]$ZcodeProc = "ZCode"
+)
+if (-not $OverlayDir) { $OverlayDir = $PSScriptRoot }
 if (-not (Test-Path $OverlayDir)) { exit 1 }
 Add-Type @"
 using System;
@@ -21,6 +29,7 @@ public class Docking {
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
@@ -95,9 +104,9 @@ public class Docking {
     IntPtr r = SendMessageTimeout(h, 0x000D /*WM_GETTEXT*/, (IntPtr)64, sb, 2 /*SMTO_ABORTIFHUNG*/, 120, out res);
     return r != IntPtr.Zero ? sb.ToString() : "";
   }
-  public static long FindZcodeMain() {
+  public static long FindZcodeMain(string procName) {
     var pids = new System.Collections.Generic.HashSet<uint>();
-    foreach (var p in Process.GetProcessesByName("ZCode")) pids.Add((uint)p.Id);
+    foreach (var p in Process.GetProcessesByName(procName)) pids.Add((uint)p.Id);
     IntPtr fg = GetForegroundWindow();
     _cand = new System.Collections.Generic.List<long>();
     _findCb = (h, l) => {
@@ -162,6 +171,23 @@ public class Docking {
         if (ty + oh > mi.rcWork.B) ty = mi.rcWork.B - oh;
       }
     }
+    // keep the card entirely on ONE monitor: transparent Electron windows
+    // straddling a monitor boundary in mixed-DPI setups stop presenting
+    int mw = 0, mh2 = 0;
+    {
+      IntPtr mon = MonitorFromWindow(ov, 2);
+      var mi2 = new MONITORINFO(); mi2.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+      if (GetMonitorInfo(mon, ref mi2)) {
+        mw = mi2.rcWork.Rt - mi2.rcWork.L; mh2 = mi2.rcWork.B - mi2.rcWork.T;
+        int ml = mi2.rcWork.L, mt = mi2.rcWork.T;
+        if (ow > mw) { tx = ml + Math.Max(0, (mw - ow) / 2); }
+        else if (tx < ml) tx = ml;
+        else if (tx + ow > ml + mw) tx = ml + mw - ow;
+        if (oh > mh2) { ty = mt + Math.Max(0, (mh2 - oh) / 2); }
+        else if (ty < mt) ty = mt;
+        else if (ty + oh > mt + mh2) ty = mt + mh2 - oh;
+      }
+    }
     var cur = Rect(ov);
     if (Math.Abs(cur.L - tx) >= 1 || Math.Abs(cur.T - ty) >= 1) {
       lastSelfMoveTick = Environment.TickCount;
@@ -218,27 +244,36 @@ public class Docking {
 }
 "@
 while ($true) {
-  # Match ALL electron processes whose exe lives under the overlay dir (main +
-  # children); a single pid is unreliable - child processes stay alive with no
-  # windows and leave the daemon idling on the wrong pid.
-  $ovPids = @(Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -like "$OverlayDir*" } | Select-Object -ExpandProperty ProcessId)
-  if ($ovPids.Count -eq 0) { break }  # overlay app fully closed, daemon exits
-  $cfgW = 260; $cfgH = 194
-  try { $c = Get-Content "$env:USERPROFILE\.zcode\zcode-token-meter.json" -Raw | ConvertFrom-Json; if ($c.w) { $cfgW = [int]$c.w }; if ($c.h) { $cfgH = [int]$c.h } } catch {}
-  $ovH = [Docking]::FindOverlayWindow([uint32[]]$ovPids, $cfgW, $cfgH)
-  if ($ovH -eq 0) {
-    Start-Sleep -Milliseconds 400
-    continue
+  if ($OverlayHwnd -ne 0) {
+    # direct-handle mode: the Electron main process tells us its exact HWND.
+    # If the handle dies, EXIT - no search fallback (searching resurrects the
+    # multi-generation zombie-daemon problem). The overlay restarts us itself.
+    $ovH = [long]$OverlayHwnd
+    if (-not [Docking]::IsWindow([IntPtr]$ovH)) { break }
+  } else {
+    # fallback (manual run without args): find by exe path + config size
+    $ovPids = @(Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -like "$OverlayDir*" } | Select-Object -ExpandProperty ProcessId)
+    if ($ovPids.Count -eq 0) { break }
+    $cfgW = 260; $cfgH = 194
+    try { $c = Get-Content "$env:USERPROFILE\.zcode\zcode-token-meter.json" -Raw | ConvertFrom-Json; if ($c.w) { $cfgW = [int]$c.w }; if ($c.h) { $cfgH = [int]$c.h } } catch {}
+    $ovH = [Docking]::FindOverlayWindow([uint32[]]$ovPids, $cfgW, $cfgH)
+    if ($ovH -eq 0) {
+      Start-Sleep -Milliseconds 400
+      continue
+    }
   }
-  $zcH = [Docking]::FindZcodeMain()
-  if ($zcH -ne 0) {
+  # cache the ZCode main window: only re-scan when the handle goes stale
+  if (-not $script:zcH -or -not [Docking]::IsWindow([IntPtr]$script:zcH)) {
+    $script:zcH = [Docking]::FindZcodeMain($ZcodeProc)
+  }
+  if ($script:zcH -ne 0) {
     $script:noMain = 0
-    [Docking]::Ensure([IntPtr]$zcH, [IntPtr]$ovH)
+    [Docking]::Ensure([IntPtr]$script:zcH, [IntPtr]$ovH)
     [Docking]::SyncVisibility()
   } else {
     # main window gone (update handoff / tray / close): hide after ~1.2s
-    $script:noMain = 1 + $(if ($script:noMain) { $script:noMain } else { 0 })
+    $script:noMain = [int]$script:noMain + 1
     if ($script:noMain -ge 3) { [Docking]::HideWhenNoMain([IntPtr]$ovH) }
   }
   [Docking]::Pump(400)
