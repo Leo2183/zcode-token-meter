@@ -18,7 +18,7 @@ jobs:
           node --check meter.mjs
           node --check meter-worker.mjs
           node --check preload.cjs
-      - name: Data layer smoke (no db on CI: expect clean ok=false shape)
+      - name: Data layer smoke (CI has no db, expect clean ok=false shape)
         run: |
           node -e "
             const out = require('child_process').execSync('node meter.mjs').toString();
