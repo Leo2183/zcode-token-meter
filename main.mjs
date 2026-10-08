@@ -104,6 +104,34 @@ function dbMtime() {
   return m;
 }
 
+// 守护监督者:守护可能被外部杀掉(ZCode 更新的 taskkill /T 连坐),同一 HWND 对本窗口
+// 仍有效,退避重拉即可恢复停靠与单屏钳制——无监督时会表现为更新后"悬浮窗消失"。
+// 退避:2s 翻倍至 60s 封顶,稳定运行 60s 重置。
+let currentWin = null;
+function startOwnerSupervisor(hwnd, errFd) {
+  let retryMs = 2000;
+  const launch = () => {
+    try {
+      const ps = spawn('powershell', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(HERE, 'owner.ps1'),
+        '-OverlayDir', HERE,
+        '-OverlayHwnd', String(hwnd),
+        '-OverlayPid', String(process.pid),
+        '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
+      ], { stdio: ['ignore', 'ignore', errFd] });
+      const bornAt = Date.now();
+      ps.on('exit', () => {
+        if (currentWin && !currentWin.isDestroyed()) {
+          retryMs = (Date.now() - bornAt > 60000) ? 2000 : Math.min(60000, retryMs * 2);
+          setTimeout(launch, retryMs);
+        }
+      });
+    } catch { setTimeout(launch, retryMs); }
+  };
+  launch();
+}
+
 function start() {
   const cfg = loadConfig();
   const scale = Number.isFinite(cfg.scale) && cfg.scale > 0 ? cfg.scale : 1;
@@ -132,6 +160,7 @@ function start() {
   // 不置顶:owner.ps1 用 HWND_NOTOPMOST 维持"正常带顶端"(低于任务栏等真置顶层)。
   // 置顶会导致悬浮窗永远不被其他窗口遮挡;ZORDER=0 独立模式才用置顶。
   if (!ZORDER) win.setAlwaysOnTop(true, 'screen-saver');
+  currentWin = win; // 供守护监督者判断窗口存亡(死亡后停止重拉)
   win.loadFile(path.join(HERE, 'renderer.html'));
 
   // 先隐藏,等渲染层上报真实内容尺寸后再显示;1.5s 兜底防 IPC 失败永不显示
@@ -148,6 +177,7 @@ function start() {
 
   // 统一的窗口销毁清理(此前分散在 5 处注册)
   win.on('closed', () => {
+    currentWin = null;
     app.quit();
     if (pollTimer) clearTimeout(pollTimer);
     if (watcher) clearInterval(watcher);
@@ -320,16 +350,9 @@ function start() {
       // 由本进程下次启动时重新拉起——避免搜索兜底复活多代僵尸守护
       const buf = win.getNativeWindowHandle();
       const hwnd = process.arch === 'x64' ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0));
-      // stderr 落盘:守护曾因编码/编译错误静默死亡,排查全靠盲猜
-      // (GBK、param 位置、重复声明三次事故都栽在 stdio ignore 上)
-      const errFd = openSync(path.join(tmpdir(), 'ztm-owner.err.log'), 'a');
-      const ps = spawn('powershell', [
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(HERE, 'owner.ps1'), '-OverlayDir', HERE,
-        '-OverlayHwnd', String(hwnd),
-        '-OverlayPid', String(process.pid),
-        '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
-      ], { stdio: ['ignore', 'ignore', errFd] });
+      // stderr 落盘到 ~/.zcode(TEMP 会被系统清理蒸发),守护死亡有据可查
+      const errFd = openSync(path.join(homedir(), '.zcode', 'ztm-owner.err.log'), 'a');
+      startOwnerSupervisor(hwnd, errFd);
     } catch { /* 绑定失败保持独立置顶窗,行为退化为旧版 */ }
   }
 }
