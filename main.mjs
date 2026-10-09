@@ -119,7 +119,7 @@ function startOwnerSupervisor(hwnd, errFd) {
         '-OverlayHwnd', String(hwnd),
         '-OverlayPid', String(process.pid),
         '-ZcodeProc', WATCH_PROC.replace(/\.exe$/i, ''),
-      ], { stdio: ['ignore', 'ignore', errFd] });
+      ], { stdio: ['ignore', 'ignore', errFd], windowsHide: true });
       const bornAt = Date.now();
       ps.on('exit', () => {
         if (currentWin && !currentWin.isDestroyed()) {
